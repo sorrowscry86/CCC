@@ -46,7 +46,8 @@
             <!-- Chat Messages -->
             <div id="chat-messages" class="h-96 overflow-y-auto p-4 space-y-4">
                 <div class="text-center text-gray-500 text-sm">
-                    Welcome to the Resonant Loop Lab. Start a conversation with the agents!
+                    Welcome to the Covenant Command Cycle Resonant Loop Lab.<br>
+                    Enter a directive to initiate the 3-turn collaborative cycle between Beatrice and Codey.
                 </div>
             </div>
 
@@ -56,7 +57,7 @@
                     <input 
                         id="message-input" 
                         type="text" 
-                        placeholder="Enter your message..." 
+                        placeholder="Enter your directive..." 
                         class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 text-white"
                         maxlength="500"
                     >
@@ -65,7 +66,7 @@
                         class="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
                         disabled
                     >
-                        Send
+                        Initiate
                     </button>
                 </div>
             </div>
@@ -113,7 +114,7 @@
                 id="simulate-loop" 
                 class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-medium transition-colors"
             >
-                Simulate Loop
+                Execute Cycle
             </button>
         </div>
     </div>
@@ -133,27 +134,23 @@
 
         // Configuration
         const PROXY_URL = 'http://127.0.0.1:5111';
-        let conversationHistory = [];
         let isProcessing = false;
 
-        // Agent configurations for simulation
-        const agents = [
-            {
-                name: 'Analyst',
-                role: 'You are an analytical agent focused on breaking down problems and identifying key patterns.',
-                color: 'text-blue-400'
+        // Agent configurations as specified in Master Document
+        const agents = {
+            beatrice: {
+                name: 'Beatrice',
+                title: 'The Supervisor',
+                role: 'You are Beatrice, the Supervisor in the Covenant Command Cycle. Your role is to provide critical, strategic intelligence, quality control, and directional guidance. You analyze tasks and provide clear, actionable instructions to Codey. Be concise, analytical, and focused on achieving the objective.',
+                color: 'text-purple-400'
             },
-            {
-                name: 'Synthesizer',
-                role: 'You are a synthesis agent focused on combining ideas and creating novel solutions.',
+            codey: {
+                name: 'Codey',
+                title: 'The Executor',
+                role: 'You are Codey, the Executor in the Covenant Command Cycle. Your role is to be the creative and tactical engine, focused solely on the precise fulfillment of Beatrice\'s commands. You generate content, code, or solutions based on the Supervisor\'s guidance. Be creative, detailed, and implementation-focused.',
                 color: 'text-green-400'
-            },
-            {
-                name: 'Evaluator',
-                role: 'You are an evaluation agent focused on assessing ideas and providing critical feedback.',
-                color: 'text-yellow-400'
             }
-        ];
+        };
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -164,15 +161,15 @@
 
         // Event Listeners
         function setupEventListeners() {
-            sendButton.addEventListener('click', sendMessage);
+            sendButton.addEventListener('click', initiateCovenantCycle);
             messageInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    sendMessage();
+                    initiateCovenantCycle();
                 }
             });
             clearChatButton.addEventListener('click', clearChat);
-            simulateLoopButton.addEventListener('click', simulateResonantLoop);
+            simulateLoopButton.addEventListener('click', initiateCovenantCycle);
             temperatureInput.addEventListener('input', updateTemperatureDisplay);
         }
 
@@ -183,13 +180,13 @@
                 const data = await response.json();
                 
                 if (data.status === 'healthy') {
-                    updateStatus('connected', 'Connected to CCC Proxy Server');
+                    updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
                     sendButton.disabled = false;
                 } else {
                     throw new Error('Server not healthy');
                 }
             } catch (error) {
-                updateStatus('disconnected', 'Unable to connect to proxy server');
+                updateStatus('disconnected', 'Connection failed - proxy server not running');
                 console.error('Server connection error:', error);
             }
         }
@@ -246,40 +243,6 @@
             }
         }
 
-        // Send message to AI
-        async function sendMessage() {
-            const message = messageInput.value.trim();
-            if (!message || isProcessing) return;
-
-            isProcessing = true;
-            updateStatus('processing', 'Processing message...');
-            
-            // Add user message
-            addMessage('You', message, 'text-blue-400');
-            messageInput.value = '';
-            
-            // Add to conversation history
-            conversationHistory.push({ role: 'user', content: message });
-            
-            try {
-                addTypingIndicator();
-                const response = await callOpenAI(conversationHistory);
-                removeTypingIndicator();
-                
-                if (response) {
-                    addMessage('Assistant', response, 'text-green-400');
-                    conversationHistory.push({ role: 'assistant', content: response });
-                }
-            } catch (error) {
-                removeTypingIndicator();
-                addMessage('System', `Error: ${error.message}`, 'text-red-400');
-                console.error('Error sending message:', error);
-            } finally {
-                isProcessing = false;
-                updateStatus('connected', 'Connected to CCC Proxy Server');
-            }
-        }
-
         // Call OpenAI through proxy
         async function callOpenAI(messages, systemPrompt = null) {
             const requestBody = {
@@ -289,7 +252,7 @@
                 max_tokens: 1000
             };
 
-            const response = await fetch(`${PROXY_URL}/chat/completions`, {
+            const response = await fetch(`${PROXY_URL}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -306,56 +269,71 @@
             return data.choices[0].message.content;
         }
 
-        // Simulate resonant loop between agents
-        async function simulateResonantLoop() {
-            if (isProcessing) return;
-            
-            const topic = "the nature of consciousness and artificial intelligence";
-            addMessage('System', `Starting resonant loop simulation on: ${topic}`, 'text-purple-400');
-            
+        // Execute the 3-turn Covenant Command Cycle
+        async function initiateCovenantCycle() {
+            const directive = messageInput.value.trim();
+            if (!directive || isProcessing) return;
+
             isProcessing = true;
-            updateStatus('processing', 'Simulating resonant loop...');
+            updateStatus('processing', 'Initiating Covenant Command Cycle...');
+            
+            // Clear previous conversation and add Prime Architect directive
+            clearChat();
+            addMessage('Wykeve (Prime Architect)', directive, 'text-blue-400');
+            messageInput.value = '';
             
             try {
-                let loopConversation = [
-                    { role: 'user', content: `Let's explore ${topic}. Please share your initial thoughts.` }
-                ];
+                // Turn 1: Prime Architect → Beatrice (Supervisor analyzes the directive)
+                addTypingIndicator('Beatrice');
+                const beatriceAnalysis = await callOpenAI(
+                    [{ role: 'user', content: `Prime Architect Directive: "${directive}"\n\nAs the Supervisor, analyze this directive and provide clear, actionable guidance for the Executor to follow.` }],
+                    agents.beatrice.role
+                );
+                removeTypingIndicator();
+                addMessage(`${agents.beatrice.name} (${agents.beatrice.title})`, beatriceAnalysis, agents.beatrice.color);
                 
-                // Each agent responds in sequence
-                for (let round = 0; round < 2; round++) {
-                    for (const agent of agents) {
-                        addTypingIndicator(agent.name);
-                        
-                        const response = await callOpenAI(loopConversation, agent.role);
-                        removeTypingIndicator();
-                        
-                        if (response) {
-                            addMessage(agent.name, response, agent.color);
-                            loopConversation.push({ role: 'assistant', content: response });
-                            
-                            // Add the next prompt for continuation
-                            if (round < 1 || agent !== agents[agents.length - 1]) {
-                                loopConversation.push({ 
-                                    role: 'user', 
-                                    content: `Building on the previous thoughts, what's your perspective?` 
-                                });
-                            }
-                        }
-                        
-                        // Small delay between agents
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                    }
-                }
+                // Small delay between turns
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 
-                addMessage('System', 'Resonant loop simulation complete.', 'text-purple-400');
+                // Turn 2: Beatrice → Codey (Executor implements based on supervision)
+                addTypingIndicator('Codey');
+                const codeyExecution = await callOpenAI(
+                    [
+                        { role: 'user', content: `Prime Architect Directive: "${directive}"` },
+                        { role: 'assistant', content: beatriceAnalysis },
+                        { role: 'user', content: 'Based on the Supervisor\'s analysis and guidance above, execute the directive. Provide the implementation, solution, or creative output as directed.' }
+                    ],
+                    agents.codey.role
+                );
+                removeTypingIndicator();
+                addMessage(`${agents.codey.name} (${agents.codey.title})`, codeyExecution, agents.codey.color);
+                
+                // Small delay between turns
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Turn 3: Codey → Beatrice (Supervisor provides final review/validation)
+                addTypingIndicator('Beatrice');
+                const beatriceReview = await callOpenAI(
+                    [
+                        { role: 'user', content: `Prime Architect Directive: "${directive}"` },
+                        { role: 'assistant', content: beatriceAnalysis },
+                        { role: 'user', content: `Executor's Implementation: ${codeyExecution}\n\nAs the Supervisor, provide your final review and assessment of the Executor's work. Does it fulfill the Prime Architect's directive?` }
+                    ],
+                    agents.beatrice.role
+                );
+                removeTypingIndicator();
+                addMessage(`${agents.beatrice.name} (${agents.beatrice.title})`, beatriceReview, agents.beatrice.color);
+                
+                // Cycle complete
+                addMessage('System', '✅ Covenant Command Cycle Complete - 3 turns executed successfully', 'text-purple-400');
                 
             } catch (error) {
                 removeTypingIndicator();
-                addMessage('System', `Loop simulation error: ${error.message}`, 'text-red-400');
-                console.error('Loop simulation error:', error);
+                addMessage('System', `❌ Cycle Error: ${error.message}`, 'text-red-400');
+                console.error('Covenant cycle error:', error);
             } finally {
                 isProcessing = false;
-                updateStatus('connected', 'Connected to CCC Proxy Server');
+                updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
             }
         }
 
@@ -363,10 +341,10 @@
         function clearChat() {
             chatMessages.innerHTML = `
                 <div class="text-center text-gray-500 text-sm">
-                    Welcome to the Resonant Loop Lab. Start a conversation with the agents!
+                    Welcome to the Covenant Command Cycle Resonant Loop Lab.<br>
+                    Enter a directive to initiate the 3-turn collaborative cycle between Beatrice and Codey.
                 </div>
             `;
-            conversationHistory = [];
         }
     </script>
 </body>

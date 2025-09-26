@@ -45,7 +45,7 @@ def health_check():
     })
 
 
-@app.route('/chat/completions', methods=['POST'])
+@app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     """
     Proxy endpoint for OpenAI chat completions
@@ -111,6 +111,6 @@ def internal_error(error):
 
 
 if __name__ == '__main__':
-    logger.info(f"Starting CCC OpenAI Proxy Server on {HOST}:{PORT}")
+    logger.info(f"Covenant API Proxy is running on http://{HOST}:{PORT}")
     logger.info("Make sure OPENAI_API_KEY is set in your environment variables")
     app.run(host=HOST, port=PORT, debug=False)
