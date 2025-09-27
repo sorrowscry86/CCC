@@ -1,32 +1,61 @@
 # CCC - Covenant Command Cycle
 
-**Stage 1: The Resonant Loop** - A precisely architected multi-agent AI system implementing a supervised agentic workflow between Beatrice (Supervisor) and Codey (Executor) through a secure Flask proxy server.
+**Stage 2: Persistent Memory & Context Retention** - An enhanced multi-agent AI system with persistent state memory, implementing supervised agentic workflows between Beatrice (Supervisor) and Codey (Executor) through a memory-enabled Flask proxy server.
 
 ## Project Overview
 
-The Covenant Command Cycle represents a foundational proof-of-concept for supervised agentic workflows. This Stage 1 implementation establishes a stable, secure connection between two distinct AI agents that collaborate through a defined 3-turn cycle to execute high-level directives from the Prime Architect.
+The Covenant Command Cycle represents a foundational proof-of-concept for supervised agentic workflows with persistent memory capabilities. This Stage 2 implementation builds upon Stage 1's stable foundation, adding context retention, session management, and agent learning to create a truly stateful multi-agent system.
 
 ## Architecture
 
+### Stage 2 Enhanced Architecture
 ```
 Prime Architect → Beatrice (Supervisor) → Codey (Executor) → Beatrice (Review)
      ↓                    ↓                      ↓                    ↓
   Directive          Analysis &            Implementation      Final Assessment
-                     Guidance
+                     Guidance              + Context           + Learning
+                        ↕                      ↕                   ↕
+                   Memory Layer          Memory Layer       Memory Layer
 ```
 
-**Data Flow:**
+**Enhanced Data Flow:**
 ```
-Browser Client (HTML) → Local Proxy Server (Python) → OpenAI API → Local Proxy Server → Browser Client
+Browser Client (HTML) → Memory-Enhanced Proxy (Python) → OpenAI API → Memory Storage → Browser Client
+                              ↕                                           ↕
+                         Session Management                          Context Analysis
 ```
+
+## Stage 2 Features
+
+### 🧠 **Persistent Memory System**
+- **Session Management**: Isolated conversation contexts with unique session IDs
+- **Context Retention**: Intelligent conversation history analysis and relevance scoring
+- **Agent Learning**: Persistent agent state tracking and pattern recognition
+- **Data Security**: Optional encryption for sensitive conversation data
+
+### 🔄 **Progressive Enhancement**
+- **Backward Compatibility**: Stage 1 functionality remains unchanged
+- **Graceful Fallback**: Automatic fallback to Stage 1 behavior when memory unavailable
+- **Seamless Integration**: Memory features enhance without replacing core cycle
 
 ## Core Components
 
-### 🛡️ Secure Proxy Server (`proxy_server.py`)
-- **Endpoint**: `POST /v1/chat/completions` (mirroring OpenAI API structure)
-- **Security**: Reads `OPENAI_API_KEY` from environment variables only
-- **Health Check**: `GET /health` for system monitoring
-- **Port**: `http://127.0.0.1:5111` (as specified)
+### 🛡️ Enhanced Proxy Server (`proxy_server.py`)
+- **Stage 1 Endpoints**: `POST /v1/chat/completions`, `GET /health`
+- **Stage 2 Endpoints**: 
+  - `POST /api/v2/sessions` - Create memory sessions
+  - `GET /api/v2/sessions/{id}` - Retrieve session info
+  - `GET /api/v2/sessions/{id}/context` - Get relevant context
+  - `POST /v2/chat/completions` - Memory-enhanced chat completions
+- **Security**: Environment-based API key management + optional data encryption
+- **Memory**: SQLite database with async operations
+- **Port**: `http://127.0.0.1:5111`
+
+### 🧠 Memory Infrastructure
+- **Database**: SQLite with structured schema (sessions, conversations, turns, agent_states)
+- **Models**: Comprehensive data models with JSON serialization
+- **Services**: High-level memory operations with caching and encryption
+- **Analytics**: Context analysis, relevance scoring, and learning pattern identification
 
 ### 🎭 Agent Personas
 

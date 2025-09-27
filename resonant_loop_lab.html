@@ -39,6 +39,10 @@
                 <div id="status-indicator" class="w-3 h-3 rounded-full bg-red-500"></div>
                 <span id="status-text" class="text-sm">Checking connection...</span>
             </div>
+            <!-- Memory Status Indicator (Phase 2) -->
+            <div id="memory-status" class="status-container mt-2 text-center hidden">
+                <!-- Memory indicator will be added here by JavaScript -->
+            </div>
         </div>
 
         <!-- Chat Container -->
@@ -152,11 +156,114 @@
             }
         };
 
+        // CCC Memory Manager (Phase 2)
+        class CCCMemoryManager {
+            constructor() {
+                this.currentSession = null;
+                this.sessionList = [];
+                this.contextCache = new Map();
+                this.memoryEnabled = false;
+            }
+            
+            async initializeMemory() {
+                try {
+                    // Check if memory service is available
+                    const response = await fetch(`${PROXY_URL}/api/v2/sessions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            user_preferences: {
+                                memory_retention_days: 30,
+                                context_depth: 10,
+                                auto_summarize: true
+                            }
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const session = await response.json();
+                        this.currentSession = session;
+                        this.memoryEnabled = true;
+                        this.updateMemoryUI();
+                        console.log('Memory service initialized:', session.session_id);
+                    }
+                } catch (error) {
+                    console.warn('Memory service not available, falling back to Stage 1 behavior');
+                    this.memoryEnabled = false;
+                }
+            }
+            
+            updateMemoryUI() {
+                const memoryStatusContainer = document.getElementById('memory-status');
+                if (memoryStatusContainer) {
+                    memoryStatusContainer.classList.remove('hidden');
+                    memoryStatusContainer.innerHTML = `
+                        <div id="memory-indicator" class="text-sm text-green-400 mb-2">
+                            <span class="inline-block w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                            Memory Active: ${this.currentSession ? this.currentSession.session_id.substr(0, 8) + '...' : 'None'}
+                        </div>
+                    `;
+                }
+            }
+            
+            async enhancedCovenantCycle(directive) {
+                if (!this.memoryEnabled || !this.currentSession) {
+                    // Fallback to original behavior
+                    return await window.originalCovenantCycle(directive);
+                }
+                
+                try {
+                    // Use v2 endpoint with memory
+                    const requestBody = {
+                        session_id: this.currentSession.session_id,
+                        model: modelSelect.value,
+                        messages: [
+                            { role: 'user', content: directive }
+                        ],
+                        temperature: parseFloat(temperatureInput.value),
+                        max_tokens: 1000,
+                        memory_options: {
+                            use_context: true,
+                            include_agent_state: true,
+                            auto_store_response: true
+                        }
+                    };
+                    
+                    const response = await fetch(`${PROXY_URL}/v2/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Memory-enhanced request failed');
+                    }
+                    
+                    const data = await response.json();
+                    return data.choices[0].message.content;
+                    
+                } catch (error) {
+                    console.error('Memory-enhanced cycle failed, falling back:', error);
+                    return await window.originalCovenantCycle(directive);
+                }
+            }
+        }
+
+        // Initialize memory manager
+        const memoryManager = new CCCMemoryManager();
+
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             checkServerStatus();
             setupEventListeners();
             updateTemperatureDisplay();
+            
+            // Initialize memory if available (Phase 2)
+            await memoryManager.initializeMemory();
         });
 
         // Event Listeners
