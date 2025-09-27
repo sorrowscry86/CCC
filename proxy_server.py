@@ -255,6 +255,11 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                     )
                 )
                 
+                # Debug logging for causal memory
+                causal_narrative = context.get('causal_narrative', 'None retrieved')
+                logger.info(f"CAUSAL DEBUG - Session {session_id[:8]}: Retrieved narrative length: {len(causal_narrative)} chars")
+                logger.info(f"CAUSAL DEBUG - Narrative preview: {causal_narrative[:100]}...")
+                
                 # Add enhanced context to messages if available
                 context_parts = []
                 
@@ -262,9 +267,17 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                 if context.get('context_summary'):
                     context_parts.append(f"Previous conversation context: {context['context_summary']}")
                 
-                # Add causal narrative for enhanced reasoning
-                if context.get('causal_narrative') and context['causal_narrative'] not in ['Causal reasoning not available', 'No relevant causal context found in memory.']:
-                    context_parts.append(f"Causal narrative: {context['causal_narrative']}")
+                # Add causal narrative for enhanced reasoning - FIXED LOGIC
+                causal_narrative = context.get('causal_narrative', '')
+                if (causal_narrative and 
+                    causal_narrative.strip() and 
+                    causal_narrative not in [
+                        'Causal reasoning not available', 
+                        'No relevant causal context found in memory.',
+                        'Causal memory not available',
+                        'Error retrieving causal context'
+                    ]):
+                    context_parts.append(f"Causal Context Chain: {causal_narrative}")
                 
                 # Add agent learning context
                 agent_context = []
@@ -277,15 +290,19 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                 if agent_context:
                     context_parts.append("Agent learning insights: " + "; ".join(agent_context))
                 
-                # Add context to messages if available
+                # Prioritize causal narrative in context injection
                 if context_parts:
-                    enhanced_context = "\n\n".join(context_parts)
+                    # Reorder to prioritize causal reasoning
+                    causal_parts = [part for part in context_parts if part.startswith("Causal Context Chain")]
+                    other_parts = [part for part in context_parts if not part.startswith("Causal Context Chain")]
+                    
+                    enhanced_context = "\n\n".join(causal_parts + other_parts)
                     context_message = {
                         'role': 'system',
-                        'content': f"Enhanced Context with Causal Reasoning:\n{enhanced_context}\n\nUse this context to inform your response while maintaining your role and expertise."
+                        'content': f"[CCC SUPERVISOR MODE - CAUSAL MEMORY ACTIVE]\n\n{enhanced_context}\n\nUSE THIS CAUSAL CONTEXT TO INFORM YOUR ANALYSIS. The causal chain shows how previous events led to current circumstances. Apply this knowledge in your supervision."
                     }
                     data['messages'] = [context_message] + data['messages']
-                    logger.info(f"Added enhanced context with causal reasoning for session {session_id[:8]}...")
+                    logger.info(f"Injected causal memory context for session {session_id[:8]}...")
             
             # Make OpenAI API call
             headers = {
@@ -314,13 +331,20 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                         )
                         
                         if conversation:
-                            # Store the AI response
+                            # Store the AI response - FIXED: Use valid agent name
                             ai_content = result['choices'][0]['message']['content']
+                            # Determine which agent is responding based on context
+                            responding_agent = 'beatrice'  # Default to supervisor agent
+                            if 'execute' in current_directive.lower() or 'implement' in current_directive.lower():
+                                responding_agent = 'codey'
+                            elif 'wykeve' in current_directive.lower() or 'architect' in current_directive.lower():
+                                responding_agent = 'wykeve'
+                            
                             loop.run_until_complete(
                                 memory_service.store_conversation_turn(
                                     session_id,
                                     conversation.conversation_id,
-                                    'ai_response',
+                                    responding_agent,
                                     ai_content,
                                     {
                                         'model_used': data.get('model', 'unknown'),
@@ -343,7 +367,11 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
             
     except Exception as e:
         logger.error(f"Memory-enhanced completion failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        # Add detailed causal memory status
+        if hasattr(memory_service, 'causal_memory'):
+            causal_available = memory_service.causal_memory._is_available()
+            logger.error(f"Causal Memory Core available: {causal_available}")
+        return jsonify({'error': f'Memory enhancement failed: {str(e)}'}), 500
 
 
 def handle_regular_completion(data):

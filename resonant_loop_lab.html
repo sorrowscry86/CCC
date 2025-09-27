@@ -156,7 +156,63 @@
             }
         };
 
-        // CCC Memory Manager (Phase 2)
+        // --- Session Management ---
+        let sessionId = null;
+
+        // This function MUST be called as soon as the page loads.
+        async function initializeSession() {
+            sessionId = localStorage.getItem('ccc_session_id');
+            
+            if (!sessionId) {
+                console.log("No session found. Creating a new one.");
+                updateStatus("No session found. Creating...");
+                try {
+                    // This is the ONLY place a new session should be created.
+                    const response = await fetch('http://127.0.0.1:5111/api/v2/sessions', { 
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            user_preferences: {
+                                interface: 'resonant_loop_lab',
+                                version: '2.0'
+                            }
+                        })
+                    });
+                    if (!response.ok) throw new Error('Failed to create session.');
+                    const data = await response.json();
+                    sessionId = data.session_id;
+                    localStorage.setItem('ccc_session_id', sessionId);
+                    console.log("New session created:", sessionId);
+                } catch (error) {
+                    console.error("Session creation failed:", error);
+                    appendBubble(`CRITICAL ERROR: Could not create a new session. The proxy server may be down.`, 'system', true);
+                    return;
+                }
+            } else {
+                console.log("Existing session retrieved:", sessionId);
+            }
+            
+            // Update the UI to reflect the active, persistent session.
+            updateMemoryStatus(true, sessionId);
+        }
+
+        // Update memory status in UI
+        function updateMemoryStatus(enabled, sessionId) {
+            const memoryStatusContainer = document.getElementById('memory-status');
+            if (memoryStatusContainer) {
+                memoryStatusContainer.classList.remove('hidden');
+                memoryStatusContainer.innerHTML = `
+                    <div id="memory-indicator" class="text-sm text-green-400 mb-2">
+                        <span class="inline-block w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                        Memory Active: ${sessionId ? sessionId.substr(0, 8) + '...' : 'None'}
+                    </div>
+                `;
+            }
+        }
+
+        // CCC Memory Manager (Phase 2) - Updated for new session handling
         class CCCMemoryManager {
             constructor() {
                 this.currentSession = null;
@@ -167,27 +223,15 @@
             
             async initializeMemory() {
                 try {
-                    // Check if memory service is available
-                    const response = await fetch(`${PROXY_URL}/api/v2/sessions`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            user_preferences: {
-                                memory_retention_days: 30,
-                                context_depth: 10,
-                                auto_summarize: true
-                            }
-                        })
-                    });
-                    
-                    if (response.ok) {
-                        const session = await response.json();
-                        this.currentSession = session;
+                    // Use the global sessionId instead of creating new sessions
+                    if (sessionId) {
+                        this.currentSession = { session_id: sessionId };
                         this.memoryEnabled = true;
                         this.updateMemoryUI();
-                        console.log('Memory service initialized:', session.session_id);
+                        console.log('Memory service initialized with existing session:', sessionId);
+                    } else {
+                        console.warn('No session available for memory initialization');
+                        this.memoryEnabled = false;
                     }
                 } catch (error) {
                     console.warn('Memory service not available, falling back to Stage 1 behavior');
@@ -197,27 +241,27 @@
             
             updateMemoryUI() {
                 const memoryStatusContainer = document.getElementById('memory-status');
-                if (memoryStatusContainer) {
+                if (memoryStatusContainer && this.memoryEnabled) {
                     memoryStatusContainer.classList.remove('hidden');
                     memoryStatusContainer.innerHTML = `
                         <div id="memory-indicator" class="text-sm text-green-400 mb-2">
                             <span class="inline-block w-2 h-2 bg-green-400 rounded-full mr-2"></span>
-                            Memory Active: ${this.currentSession ? this.currentSession.session_id.substr(0, 8) + '...' : 'None'}
+                            Memory Active: ${sessionId ? sessionId.substr(0, 8) + '...' : 'None'}
                         </div>
                     `;
                 }
             }
             
             async enhancedCovenantCycle(directive) {
-                if (!this.memoryEnabled || !this.currentSession) {
+                if (!this.memoryEnabled || !sessionId) {
                     // Fallback to original behavior
                     return await window.originalCovenantCycle(directive);
                 }
-                
+
                 try {
                     // Use v2 endpoint with memory
                     const requestBody = {
-                        session_id: this.currentSession.session_id,
+                        session_id: sessionId,
                         model: modelSelect.value,
                         messages: [
                             { role: 'user', content: directive }
@@ -256,13 +300,14 @@
         // Initialize memory manager
         const memoryManager = new CCCMemoryManager();
 
-        // Initialize
+        // Ensure this is called on page load.
         document.addEventListener('DOMContentLoaded', async () => {
             checkServerStatus();
             setupEventListeners();
             updateTemperatureDisplay();
             
-            // Initialize memory if available (Phase 2)
+            // Initialize session first, then memory
+            await initializeSession();
             await memoryManager.initializeMemory();
         });
 
