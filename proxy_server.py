@@ -267,19 +267,23 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                 if context.get('context_summary'):
                     context_parts.append(f"Previous conversation context: {context['context_summary']}")
                 
-                # Add causal narrative for enhanced reasoning - FIXED LOGIC
-                causal_narrative = context.get('causal_narrative', '')
-                if (causal_narrative and 
-                    causal_narrative.strip() and 
-                    causal_narrative not in [
-                        'Causal reasoning not available', 
-                        'No relevant causal context found in memory.',
-                        'Causal memory not available',
-                        'Error retrieving causal context'
-                    ]):
-                    context_parts.append(f"Causal Context Chain: {causal_narrative}")
+                # CRITICAL REFACTOR: Construct the Structured Context Block
+                domain = context.get('domain', 'Technical domain not available')
+                narrative_summary = context.get('causal_narrative', 'No causal context available')
                 
-                # Add agent learning context
+                # Construct structured context as mandated
+                structured_context = f"""**PREVIOUS TECHNICAL CONTEXT**
+- **Domain:** {domain}
+- **Session History Summary:**
+{narrative_summary}
+---
+"""
+                
+                # Add traditional context summary if available
+                if context.get('context_summary'):
+                    structured_context += f"\n**Traditional Context:** {context['context_summary']}\n"
+                
+                # Add agent learning insights
                 agent_context = []
                 for agent, state in context.get('agent_states', {}).items():
                     if state.get('preferred_topics'):
@@ -288,21 +292,15 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                         agent_context.append(f"{agent.title()} frequently discusses: {topics_str}")
                 
                 if agent_context:
-                    context_parts.append("Agent learning insights: " + "; ".join(agent_context))
+                    structured_context += f"\n**Agent Insights:** " + "; ".join(agent_context) + "\n"
                 
-                # Prioritize causal narrative in context injection
-                if context_parts:
-                    # Reorder to prioritize causal reasoning
-                    causal_parts = [part for part in context_parts if part.startswith("Causal Context Chain")]
-                    other_parts = [part for part in context_parts if not part.startswith("Causal Context Chain")]
-                    
-                    enhanced_context = "\n\n".join(causal_parts + other_parts)
-                    context_message = {
-                        'role': 'system',
-                        'content': f"[CCC SUPERVISOR MODE - CAUSAL MEMORY ACTIVE]\n\n{enhanced_context}\n\nUSE THIS CAUSAL CONTEXT TO INFORM YOUR ANALYSIS. The causal chain shows how previous events led to current circumstances. Apply this knowledge in your supervision."
-                    }
-                    data['messages'] = [context_message] + data['messages']
-                    logger.info(f"Injected causal memory context for session {session_id[:8]}...")
+                # Inject the structured context block
+                context_message = {
+                    'role': 'system',
+                    'content': f"[CCC SUPERVISOR MODE - CAUSAL MEMORY ACTIVE]\n\n{structured_context}\n\nUSE THIS TECHNICAL CONTEXT TO INFORM YOUR ANALYSIS. The domain context ensures you understand the technical framework, while the causal chain shows how previous events led to current circumstances. Apply this knowledge in your supervision."
+                }
+                data['messages'] = [context_message] + data['messages']
+                logger.info(f"Injected structured domain context for session {session_id[:8]}... Domain: {domain[:30]}...")
             
             # Make OpenAI API call
             headers = {
