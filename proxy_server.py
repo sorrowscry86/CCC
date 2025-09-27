@@ -129,6 +129,48 @@ def get_session(session_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/v2/sessions/<session_id>/causal', methods=['GET'])
+def get_causal_context(session_id):
+    """Get causal narrative context for a session"""
+    try:
+        if not memory_service:
+            return jsonify({'error': 'Memory service not available'}), 503
+        
+        query = request.args.get('query', '')
+        if not query:
+            return jsonify({'error': 'Query parameter required'}), 400
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Get causal context from enhanced memory service
+            context = loop.run_until_complete(
+                memory_service.get_relevant_context(session_id, query, 10)
+            )
+            
+            # Return focused causal information
+            return jsonify({
+                'session_id': session_id,
+                'query': query,
+                'causal_narrative': context.get('causal_narrative', 'No causal context available'),
+                'traditional_summary': context.get('context_summary', ''),
+                'total_conversations': context.get('total_conversations', 0),
+                'agent_insights': {
+                    agent: {
+                        'interaction_count': state.get('interaction_count', 0),
+                        'preferred_topics': list(state.get('preferred_topics', {}).keys())[:5]
+                    }
+                    for agent, state in context.get('agent_states', {}).items()
+                }
+            })
+        finally:
+            loop.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to get causal context: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/v2/sessions/<session_id>/context', methods=['GET'])
 def get_session_context(session_id):
     """Get relevant context for a session"""
@@ -213,14 +255,37 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                     )
                 )
                 
+                # Add enhanced context to messages if available
+                context_parts = []
+                
+                # Add traditional context summary
+                if context.get('context_summary'):
+                    context_parts.append(f"Previous conversation context: {context['context_summary']}")
+                
+                # Add causal narrative for enhanced reasoning
+                if context.get('causal_narrative') and context['causal_narrative'] not in ['Causal reasoning not available', 'No relevant causal context found in memory.']:
+                    context_parts.append(f"Causal narrative: {context['causal_narrative']}")
+                
+                # Add agent learning context
+                agent_context = []
+                for agent, state in context.get('agent_states', {}).items():
+                    if state.get('preferred_topics'):
+                        top_topics = sorted(state['preferred_topics'].items(), key=lambda x: x[1], reverse=True)[:3]
+                        topics_str = ', '.join([topic for topic, _ in top_topics])
+                        agent_context.append(f"{agent.title()} frequently discusses: {topics_str}")
+                
+                if agent_context:
+                    context_parts.append("Agent learning insights: " + "; ".join(agent_context))
+                
                 # Add context to messages if available
-                if context['relevant_conversations']:
+                if context_parts:
+                    enhanced_context = "\n\n".join(context_parts)
                     context_message = {
                         'role': 'system',
-                        'content': f"Context from previous conversations: {context['context_summary']}"
+                        'content': f"Enhanced Context with Causal Reasoning:\n{enhanced_context}\n\nUse this context to inform your response while maintaining your role and expertise."
                     }
                     data['messages'] = [context_message] + data['messages']
-                    logger.info(f"Added context from {len(context['relevant_conversations'])} relevant conversations")
+                    logger.info(f"Added enhanced context with causal reasoning for session {session_id[:8]}...")
             
             # Make OpenAI API call
             headers = {
@@ -260,7 +325,8 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                                     {
                                         'model_used': data.get('model', 'unknown'),
                                         'temperature': data.get('temperature', 0.7),
-                                        'execution_time_ms': response.elapsed.total_seconds() * 1000
+                                        'execution_time_ms': response.elapsed.total_seconds() * 1000,
+                                        'enhanced_with_causal_reasoning': True
                                     }
                                 )
                             )
