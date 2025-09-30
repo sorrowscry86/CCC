@@ -171,6 +171,7 @@ class MemoryService:
                 'agent_states': {},
                 'context_summary': '',
                 'causal_narrative': '',
+                'domain': '',  # Add domain field for structured context
                 'total_conversations': 0
             }
             
@@ -211,16 +212,28 @@ class MemoryService:
                     
                     context['context_summary'] = self.context_analyzer.summarize_conversation_sequence(all_turns)
             
-            # Get causal narrative using Causal Memory Core
+            # CRITICAL REFACTOR: Two-part query sequence for domain context preservation
             try:
+                # Part A: Domain Identification Query
+                domain_query = "Based on the session history, identify the primary technical domain of this project (e.g., 'Software Engineering in Python', 'Creative Writing', 'Biological System Design')."
+                domain = self.causal_memory.get_causal_context(
+                    domain_query,
+                    session_id=session_id
+                )
+                
+                # Part B: Contextual Narrative Query (existing)
                 causal_narrative = self.causal_memory.get_causal_context(
                     current_directive, 
                     session_id=session_id
                 )
+                
+                # Store both domain and narrative for structured context construction
+                context['domain'] = domain
                 context['causal_narrative'] = causal_narrative
-                logger.info(f"Enhanced context with causal narrative for session {session_id}")
+                logger.info(f"Enhanced context with domain '{domain[:50]}...' and causal narrative for session {session_id}")
             except Exception as e:
                 logger.warning(f"Failed to get causal narrative: {e}")
+                context['domain'] = "Technical domain not available"
                 context['causal_narrative'] = "Causal reasoning not available"
             
             # Get agent states
