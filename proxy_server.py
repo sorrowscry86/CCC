@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Enhanced OpenAI API Proxy Server for CCC (Covenant Command Cycle) - Stage 2
 
@@ -12,6 +12,9 @@ import sys
 import json
 import logging
 import asyncio
+import threading
+import time
+import functools
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
@@ -34,20 +37,123 @@ CORS(app)  # Enable CORS for frontend communication
 # Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 OPENAI_API_BASE = 'https://api.openai.com/v1'
-HOST = '127.0.0.1'
-PORT = 5111
+HOST = '127.0.0.1'  # Back to localhost for testing
+PORT = 8000  # Try a different port
 
 if not OPENAI_API_KEY:
     logger.error("OPENAI_API_KEY environment variable is not set!")
     raise ValueError("OPENAI_API_KEY is required but not found in environment variables")
 
 # Initialize memory service (global variables)
+server_start_time = time.time()
 memory_dal = None
 memory_service = None
+memory_initialized = False
+memory_initializing = False
+
+
+class AsyncioLoopManager:
+    """Context manager for handling asyncio loop operations"""
+    def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        return self.loop
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.loop.close()
+        
+    @staticmethod
+    def run_async(coro_func, timeout=None):
+        """Run an async function in a managed loop with optional timeout"""
+        with AsyncioLoopManager() as loop:
+            if timeout:
+                try:
+                    return loop.run_until_complete(asyncio.wait_for(coro_func, timeout=timeout))
+                except asyncio.TimeoutError:
+                    logger.error(f"Async operation timed out after {timeout} seconds")
+                    raise
+            else:
+                return loop.run_until_complete(coro_func)
+
+
+def api_error_handler(service_required=True, error_prefix="API error"):
+    """Decorator for standardizing API error handling"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                # Check if memory service is required but not available
+                if service_required and not memory_service:
+                    return jsonify({'error': 'Memory service not available'}), 503
+                
+                return func(*args, **kwargs)
+                
+            except Exception as e:
+                error_message = f"{error_prefix}: {e}"
+                logger.error(error_message)
+                return jsonify({'error': str(e)}), 500
+        return wrapper
+    return decorator
+
+
+def call_openai_api(endpoint, data, timeout=30):
+    """Make a request to the OpenAI API"""
+    headers = {
+        'Authorization': f'Bearer {OPENAI_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    logger.info(f"Calling OpenAI API: {endpoint} with model {data.get('model', 'unknown')}")
+    
+    try:
+        response = requests.post(
+            f'{OPENAI_API_BASE}/{endpoint}',
+            json=data,
+            headers=headers,
+            timeout=timeout
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"OpenAI API call successful: {endpoint}")
+            return response.json(), None
+        else:
+            error_msg = f"OpenAI API error: {response.status_code} - {response.text}"
+            logger.error(error_msg)
+            return None, (response.json() if response.content else {'error': 'Unknown error'}, response.status_code)
+            
+    except requests.exceptions.Timeout:
+        logger.error(f"OpenAI API timeout: {endpoint}")
+        return None, ({'error': 'Request timeout'}, 408)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"OpenAI API request error: {e}")
+        return None, ({'error': 'Request failed', 'details': str(e)}, 500)
+
+
+def validate_json_request(f):
+    """Decorator to validate JSON requests"""
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            if not request.is_json:
+                return jsonify({'error': 'Request must be JSON'}), 400
+                
+            data = request.get_json()
+            if data is None:
+                return jsonify({'error': 'No JSON data provided'}), 400
+                
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 async def initialize_memory_service():
     """Initialize memory service"""
-    global memory_dal, memory_service
+    global memory_dal, memory_service, memory_initialized, memory_initializing
+    
+    if memory_initializing:
+        logger.info("Memory service initialization already in progress...")
+        return False
+        
+    memory_initializing = True
     
     try:
         from src.memory.database import MemoryDAL
@@ -58,177 +164,163 @@ async def initialize_memory_service():
         await memory_dal.initialize_database()
         memory_service = MemoryService(memory_dal)
         logger.info("Memory service initialized successfully")
+        memory_initialized = True
         return True
     except Exception as e:
         logger.warning(f"Memory service initialization failed (Stage 1 fallback): {e}")
+        memory_initialized = False
         return False
+    finally:
+        memory_initializing = False
+
+
+def initialize_memory_service_background():
+    """Initialize memory service in background thread"""
+    global memory_dal, memory_service, memory_initialized, memory_initializing
+    
+    try:
+        logger.info("[MEMORY] Starting memory service initialization in background...")
+        
+        # Add timeout for initialization
+        try:
+            # Use the AsyncioLoopManager for cleaner async handling
+            result = AsyncioLoopManager.run_async(initialize_memory_service(), timeout=60.0)
+            
+            if memory_initialized:
+                logger.info("[MEMORY] Memory service: ENABLED")
+            else:
+                logger.info("[MEMORY] Memory service: DISABLED")
+                
+        except asyncio.TimeoutError:
+            logger.error("[MEMORY] Memory service initialization timed out after 60 seconds")
+            memory_initializing = False
+            memory_initialized = False
+            
+    except Exception as e:
+        logger.error(f"Memory service initialization error: {e}")
+        logger.info("[MEMORY] Memory service: DISABLED (error during initialization)")
+        memory_initializing = False
+        memory_initialized = False
 
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    memory_status = 'available' if memory_service else 'unavailable'
+    global memory_service, memory_initialized, memory_initializing
+    
+    status = "initializing" if memory_initializing else ("available" if memory_initialized else "unavailable")
+    
     return jsonify({
         'status': 'healthy',
         'service': 'CCC OpenAI Proxy',
         'version': '2.0.0',
-        'memory_service': memory_status,
-        'stage': '2' if memory_service else '1'
+        'memory_service': status,
+        'stage': '2' if memory_initialized else '1'
     })
 
 
 # Stage 2 Memory Endpoints
 @app.route('/api/v2/sessions', methods=['POST'])
+@validate_json_request
+@api_error_handler(service_required=True, error_prefix="Failed to create session")
 def create_session():
     """Create new memory session"""
-    try:
-        if not memory_service:
-            return jsonify({'error': 'Memory service not available'}), 503
-        
-        data = request.get_json() or {}
-        user_preferences = data.get('user_preferences', {})
-        
-        # Run async function in sync context
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            session = loop.run_until_complete(
-                memory_service.initialize_session(user_preferences)
-            )
-            return jsonify(session.to_dict())
-        finally:
-            loop.close()
-            
-    except Exception as e:
-        logger.error(f"Failed to create session: {e}")
-        return jsonify({'error': str(e)}), 500
+    data = request.get_json() or {}
+    user_preferences = data.get('user_preferences', {})
+    
+    # Use AsyncioLoopManager for cleaner async handling
+    session = AsyncioLoopManager.run_async(
+        memory_service.initialize_session(user_preferences)
+    )
+    return jsonify(session.to_dict())
 
 
 @app.route('/api/v2/sessions/<session_id>', methods=['GET'])
+@api_error_handler(service_required=True, error_prefix="Failed to get session")
 def get_session(session_id):
     """Get session information"""
-    try:
-        if not memory_service:
-            return jsonify({'error': 'Memory service not available'}), 503
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            session = loop.run_until_complete(
-                memory_service.get_session(session_id)
-            )
-            if session:
-                return jsonify(session.to_dict())
-            else:
-                return jsonify({'error': 'Session not found'}), 404
-        finally:
-            loop.close()
-            
-    except Exception as e:
-        logger.error(f"Failed to get session: {e}")
-        return jsonify({'error': str(e)}), 500
+    # Use AsyncioLoopManager for cleaner async handling
+    session = AsyncioLoopManager.run_async(
+        memory_service.get_session(session_id)
+    )
+    
+    if session:
+        return jsonify(session.to_dict())
+    else:
+        return jsonify({'error': 'Session not found'}), 404
 
 
 @app.route('/api/v2/sessions/<session_id>/causal', methods=['GET'])
+@api_error_handler(service_required=True, error_prefix="Failed to get causal context")
 def get_causal_context(session_id):
     """Get causal narrative context for a session"""
-    try:
-        if not memory_service:
-            return jsonify({'error': 'Memory service not available'}), 503
-        
-        query = request.args.get('query', '')
-        if not query:
-            return jsonify({'error': 'Query parameter required'}), 400
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            # Get causal context from enhanced memory service
-            context = loop.run_until_complete(
-                memory_service.get_relevant_context(session_id, query, 10)
-            )
-            
-            # Return focused causal information
-            return jsonify({
-                'session_id': session_id,
-                'query': query,
-                'causal_narrative': context.get('causal_narrative', 'No causal context available'),
-                'traditional_summary': context.get('context_summary', ''),
-                'total_conversations': context.get('total_conversations', 0),
-                'agent_insights': {
-                    agent: {
-                        'interaction_count': state.get('interaction_count', 0),
-                        'preferred_topics': list(state.get('preferred_topics', {}).keys())[:5]
-                    }
-                    for agent, state in context.get('agent_states', {}).items()
-                }
-            })
-        finally:
-            loop.close()
-            
-    except Exception as e:
-        logger.error(f"Failed to get causal context: {e}")
-        return jsonify({'error': str(e)}), 500
+    query = request.args.get('query', '')
+    if not query:
+        return jsonify({'error': 'Query parameter required'}), 400
+    
+    # Use AsyncioLoopManager for cleaner async handling
+    context = AsyncioLoopManager.run_async(
+        memory_service.get_relevant_context(session_id, query, 10)
+    )
+    
+    # Return focused causal information
+    return jsonify({
+        'session_id': session_id,
+        'query': query,
+        'causal_narrative': context.get('causal_narrative', 'No causal context available'),
+        'traditional_summary': context.get('context_summary', ''),
+        'total_conversations': context.get('total_conversations', 0),
+        'agent_insights': {
+            agent: {
+                'interaction_count': state.get('interaction_count', 0),
+                'preferred_topics': list(state.get('preferred_topics', {}).keys())[:5]
+            }
+            for agent, state in context.get('agent_states', {}).items()
+        }
+    })
 
 
 @app.route('/api/v2/sessions/<session_id>/context', methods=['GET'])
+@api_error_handler(service_required=True, error_prefix="Failed to get session context")
 def get_session_context(session_id):
     """Get relevant context for a session"""
-    try:
-        if not memory_service:
-            return jsonify({'error': 'Memory service not available'}), 503
-        
-        directive = request.args.get('directive', '')
-        max_turns = int(request.args.get('max_turns', 10))
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            context = loop.run_until_complete(
-                memory_service.get_relevant_context(session_id, directive, max_turns)
-            )
-            return jsonify(context)
-        finally:
-            loop.close()
-            
-    except Exception as e:
-        logger.error(f"Failed to get session context: {e}")
-        return jsonify({'error': str(e)}), 500
+    directive = request.args.get('directive', '')
+    max_turns = int(request.args.get('max_turns', 10))
+    
+    # Use AsyncioLoopManager for cleaner async handling
+    context = AsyncioLoopManager.run_async(
+        memory_service.get_relevant_context(session_id, directive, max_turns)
+    )
+    return jsonify(context)
 
 
 # Enhanced Chat Completions with Memory (v2 endpoint)
 @app.route('/v2/chat/completions', methods=['POST'])
+@validate_json_request
+@api_error_handler(service_required=False, error_prefix="Enhanced chat completion error")
 def enhanced_chat_completions():
     """
     Enhanced chat completions with memory support
     Backward compatible with v1 when memory options not provided
     """
-    try:
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
-        
-        # Extract memory options
-        memory_options = data.pop('memory_options', {})
-        session_id = data.pop('session_id', None)
-        
-        # If memory is requested but not available, fall back to regular completion
-        if memory_options and not memory_service:
-            logger.warning("Memory requested but service unavailable, falling back to Stage 1")
-            memory_options = {}
-            session_id = None
-        
-        # Handle memory-enhanced request
-        if memory_options and session_id and memory_service:
-            return handle_memory_enhanced_completion(data, session_id, memory_options)
-        else:
-            # Fall back to regular completion (Stage 1 behavior)
-            return handle_regular_completion(data)
-            
-    except Exception as e:
-        logger.error(f"Enhanced chat completion error: {e}")
-        return jsonify({'error': str(e)}), 500
+    data = request.get_json()
+    
+    # Extract memory options
+    memory_options = data.pop('memory_options', {})
+    session_id = data.pop('session_id', None)
+    
+    # If memory is requested but not available, fall back to regular completion
+    if memory_options and not memory_service:
+        logger.warning("Memory requested but service unavailable, falling back to Stage 1")
+        memory_options = {}
+        session_id = None
+    
+    # Handle memory-enhanced request
+    if memory_options and session_id and memory_service:
+        return handle_memory_enhanced_completion(data, session_id, memory_options)
+    else:
+        # Fall back to regular completion (Stage 1 behavior)
+        return handle_regular_completion(data)
 
 
 def handle_memory_enhanced_completion(data, session_id, memory_options):
@@ -241,10 +333,7 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
         
         current_directive = messages[-1].get('content', '') if messages else ''
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
+        with AsyncioLoopManager() as loop:
             # Get relevant context if requested
             if memory_options.get('use_context', False):
                 context = loop.run_until_complete(
@@ -302,67 +391,47 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                 data['messages'] = [context_message] + data['messages']
                 logger.info(f"Injected structured domain context for session {session_id[:8]}... Domain: {domain[:30]}...")
             
-            # Make OpenAI API call
-            headers = {
-                'Authorization': f'Bearer {OPENAI_API_KEY}',
-                'Content-Type': 'application/json'
-            }
+            # Make OpenAI API call using the new centralized function
+            result, error = call_openai_api('chat/completions', data)
             
-            logger.info(f"Memory-enhanced chat completion for session {session_id[:8]}...")
-            
-            response = requests.post(
-                f'{OPENAI_API_BASE}/chat/completions',
-                json=data,
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
+            if error:
+                return jsonify(error[0]), error[1]
                 
-                # Store response in memory if requested
-                if memory_options.get('auto_store_response', False):
-                    try:
-                        # Create conversation if new
-                        conversation = loop.run_until_complete(
-                            memory_service.create_conversation(session_id, current_directive)
-                        )
-                        
-                        if conversation:
-                            # Store the AI response - FIXED: Use valid agent name
-                            ai_content = result['choices'][0]['message']['content']
-                            # Determine which agent is responding based on context
-                            responding_agent = 'beatrice'  # Default to supervisor agent
-                            if 'execute' in current_directive.lower() or 'implement' in current_directive.lower():
-                                responding_agent = 'codey'
-                            elif 'wykeve' in current_directive.lower() or 'architect' in current_directive.lower():
-                                responding_agent = 'wykeve'
-                            
-                            loop.run_until_complete(
-                                memory_service.store_conversation_turn(
-                                    session_id,
-                                    conversation.conversation_id,
-                                    responding_agent,
-                                    ai_content,
-                                    {
-                                        'model_used': data.get('model', 'unknown'),
-                                        'temperature': data.get('temperature', 0.7),
-                                        'execution_time_ms': response.elapsed.total_seconds() * 1000,
-                                        'enhanced_with_causal_reasoning': True
-                                    }
-                                )
+            # Store response in memory if requested
+            if memory_options.get('auto_store_response', False):
+                try:
+                    # Create conversation if new
+                    conversation = loop.run_until_complete(
+                        memory_service.create_conversation(session_id, current_directive)
+                    )
+
+                    if conversation:
+                        # Store the AI response - FIXED: Use valid agent name
+                        ai_content = result['choices'][0]['message']['content']
+                        # Determine which agent is responding based on context
+                        responding_agent = 'beatrice'  # Default to supervisor agent
+                        if 'execute' in current_directive.lower() or 'implement' in current_directive.lower():
+                            responding_agent = 'codey'
+
+                        loop.run_until_complete(
+                            memory_service.store_conversation_turn(
+                                session_id,
+                                conversation.conversation_id,
+                                responding_agent,
+                                ai_content,
+                                {
+                                    'model_used': data.get('model', 'unknown'),
+                                    'temperature': data.get('temperature', 0.7),
+                                    'execution_time_ms': 0,  # Can't access response.elapsed here
+                                    'enhanced_with_causal_reasoning': True
+                                }
                             )
-                    except Exception as e:
-                        logger.warning(f"Failed to store response in memory: {e}")
-                
-                return jsonify(result)
-            else:
-                error_data = response.json() if response.content else {'error': 'Unknown error'}
-                return jsonify(error_data), response.status_code
-                
-        finally:
-            loop.close()
-            
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to store response in memory: {e}")
+
+            return jsonify(result)
+
     except Exception as e:
         logger.error(f"Memory-enhanced completion failed: {e}")
         # Add detailed causal memory status
@@ -374,98 +443,32 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
 
 def handle_regular_completion(data):
     """Handle regular chat completion (Stage 1 behavior)"""
-    try:
-        # Prepare headers for OpenAI API
-        headers = {
-            'Authorization': f'Bearer {OPENAI_API_KEY}',
-            'Content-Type': 'application/json'
-        }
+    # Use the centralized OpenAI API call function
+    result, error = call_openai_api('chat/completions', data)
+    
+    if error:
+        return jsonify(error[0]), error[1]
         
-        # Log the request (without sensitive data)
-        logger.info(f"Regular chat completion request with model: {data.get('model', 'unknown')}")
-        
-        # Forward request to OpenAI
-        response = requests.post(
-            f'{OPENAI_API_BASE}/chat/completions',
-            json=data,
-            headers=headers,
-            timeout=30
-        )
-        
-        # Return the response
-        if response.status_code == 200:
-            logger.info("Successfully proxied request to OpenAI")
-            return jsonify(response.json())
-        else:
-            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-            return jsonify({
-                'error': 'OpenAI API error',
-                'status_code': response.status_code,
-                'message': response.text
-            }), response.status_code
-            
-    except requests.exceptions.Timeout:
-        logger.error("Request to OpenAI API timed out")
-        return jsonify({'error': 'Request timeout'}), 408
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        return jsonify({'error': 'Request failed', 'details': str(e)}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+    return jsonify(result)
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
+@validate_json_request
+@api_error_handler(service_required=False, error_prefix="Chat completion error")
 def chat_completions():
     """
     Proxy endpoint for OpenAI chat completions
     Forwards requests to OpenAI API with proper authentication
     """
-    try:
-        # Get request data
-        data = request.get_json()
+    data = request.get_json()
+    
+    # Use the centralized OpenAI API call function
+    result, error = call_openai_api('chat/completions', data)
+    
+    if error:
+        return jsonify(error[0]), error[1]
         
-        if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
-        
-        # Prepare headers for OpenAI API
-        headers = {
-            'Authorization': f'Bearer {OPENAI_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-        
-        # Log the request (without sensitive data)
-        logger.info(f"Proxying chat completion request with model: {data.get('model', 'unknown')}")
-        
-        # Forward request to OpenAI
-        response = requests.post(
-            f'{OPENAI_API_BASE}/chat/completions',
-            json=data,
-            headers=headers,
-            timeout=30
-        )
-        
-        # Return the response
-        if response.status_code == 200:
-            logger.info("Successfully proxied request to OpenAI")
-            return jsonify(response.json())
-        else:
-            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-            return jsonify({
-                'error': 'OpenAI API error',
-                'status_code': response.status_code,
-                'message': response.text
-            }), response.status_code
-            
-    except requests.exceptions.Timeout:
-        logger.error("Request to OpenAI API timed out")
-        return jsonify({'error': 'Request timeout'}), 408
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        return jsonify({'error': 'Request failed', 'details': str(e)}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+    return jsonify(result)
 
 
 @app.errorhandler(404)
@@ -480,25 +483,110 @@ def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
 
+@app.route("/api/v2/status", methods=["GET"])
+def memory_service_status():
+    """Get detailed memory service status"""
+    global memory_service, memory_initialized, memory_initializing
+    
+    status = {
+        'memory_service': {
+            'status': "initializing" if memory_initializing else ("available" if memory_initialized else "unavailable"),       
+            'initialization_complete': memory_initialized,
+            'initialization_in_progress': memory_initializing
+        },
+        'server': {
+            'version': '2.0.0',
+            'stage': '2' if memory_initialized else '1',
+            'uptime_seconds': int(time.time() - server_start_time)
+        }
+    }
+    
+    # Add detailed memory service info if available
+    if memory_service:
+        try:
+            # Get database stats if available
+            db_stats = {}
+            if memory_dal:
+                try:
+                    # Use AsyncioLoopManager for cleaner async handling
+                    stats = AsyncioLoopManager.run_async(memory_dal.get_stats())
+                    db_stats = {
+                        'sessions_count': stats.get('sessions_count', 0),
+                        'conversations_count': stats.get('conversations_count', 0),
+                        'turns_count': stats.get('turns_count', 0)
+                    }
+                except Exception as e:
+                    db_stats = {'error': str(e)}
+    
+            # Check causal memory status
+            causal_status = "unavailable"
+            if hasattr(memory_service, 'causal_memory'):
+                causal_status = "available" if memory_service.causal_memory._is_available() else "unavailable"
+    
+            status['memory_service'].update({
+                'database': db_stats,
+                'causal_memory': causal_status
+            })
+        except Exception as e:
+            status['memory_service']['error'] = str(e)
+    
+    return jsonify(status)
+
+
 if __name__ == '__main__':
-    # Initialize memory service on startup
+    # Start the server first, then initialize memory in background
+    logger.info("[START] Covenant API Proxy is starting...")
+    logger.info(f"[SERVER] Server running on http://{HOST}:{PORT}")
+    logger.info("[NOTE] Make sure OPENAI_API_KEY is set in your environment variables")
+    
+    import signal
+    import atexit
+    
+    def cleanup_resources():
+        """Clean up resources before shutdown"""
+        logger.info("[SERVER] Shutting down server...")
+        if memory_dal and hasattr(memory_dal, 'close'):
+            logger.info("[MEMORY] Closing database connections...")
+            try:
+                # Use AsyncioLoopManager for cleaner async handling
+                AsyncioLoopManager.run_async(memory_dal.close())
+                logger.info("[MEMORY] Database connections closed successfully")
+            except Exception as e:
+                logger.error(f"Error closing database connections: {e}")
+    
+    # Register the cleanup function to be called on exit
+    atexit.register(cleanup_resources)
+    
+    # Handle SIGINT (Ctrl+C) and SIGTERM
+    def signal_handler(sig, frame):
+        logger.info(f"Received signal {sig}, shutting down...")
+        cleanup_resources()
+        sys.exit(0)
+    
+    # Register signal handlers if on Unix-like system
+    if hasattr(signal, 'SIGINT'):
+        signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Start memory service initialization in a background thread
+    memory_thread = threading.Thread(target=initialize_memory_service_background)
+    memory_thread.daemon = True
+    memory_thread.start()
+    
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        memory_available = loop.run_until_complete(initialize_memory_service())
-        loop.close()
-        
-        if memory_available:
-            logger.info("🚀 Covenant API Proxy with Memory (Stage 2) is starting...")
-            logger.info(f"🧠 Memory service: ENABLED")
-        else:
-            logger.info("🚀 Covenant API Proxy (Stage 1 Fallback) is starting...")
-            logger.info("🧠 Memory service: DISABLED")
-            
+        app.run(
+            host=HOST,
+            port=PORT,
+            debug=True,
+            use_reloader=False,
+            threaded=True  # Enable threading for the Flask app
+        )
     except Exception as e:
-        logger.error(f"Startup error: {e}")
-        logger.info("🚀 Covenant API Proxy (Stage 1 Fallback) is starting...")
-        
-    logger.info(f"🌐 Server running on http://{HOST}:{PORT}")
-    logger.info("📝 Make sure OPENAI_API_KEY is set in your environment variables")
-    app.run(host=HOST, port=PORT, debug=False)
+        logger.error(f"Failed to start Flask server: {e}")
+        logger.error("This could be due to:")
+        logger.error("- Port 8000 already in use")
+        logger.error("- Windows Firewall blocking the connection")
+        logger.error("- Insufficient permissions")
+        sys.exit(1)
+
