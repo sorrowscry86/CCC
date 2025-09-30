@@ -300,6 +300,55 @@ class MemoryDAL:
         try:
             cutoff_date = datetime.utcnow() - timedelta(days=max_age_days)
             async with aiosqlite.connect(self.db_path) as db:
+                # Execute cleanup logic here
+                pass
+            return 0
+        except Exception as e:
+            logger.error(f"Error cleaning up expired sessions: {e}")
+            return -1
+async def get_stats(self) -> Dict[str, int]:
+        """Get database statistics"""
+        stats = {}
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Count sessions
+                cursor = await db.execute("SELECT COUNT(*) FROM sessions")
+                stats['sessions_count'] = (await cursor.fetchone())[0]
+                
+                # Count conversations
+                cursor = await db.execute("SELECT COUNT(*) FROM conversations")
+                stats['conversations_count'] = (await cursor.fetchone())[0]
+                
+                # Count turns
+                cursor = await db.execute("SELECT COUNT(*) FROM turns")
+                stats['turns_count'] = (await cursor.fetchone())[0]
+                
+                # Count agent states
+                cursor = await db.execute("SELECT COUNT(*) FROM agent_states")
+                stats['agent_states_count'] = (await cursor.fetchone())[0]
+                
+                # Count context summaries
+                cursor = await db.execute("SELECT COUNT(*) FROM context_summaries")
+                stats['context_summaries_count'] = (await cursor.fetchone())[0]
+                
+                # Count causal events if table exists
+                try:
+                    cursor = await db.execute("SELECT COUNT(*) FROM causal_events")
+                    stats['causal_events_count'] = (await cursor.fetchone())[0]
+                except:
+                    stats['causal_events_count'] = 0
+        except Exception as e:
+            logger.error(f"Error getting database stats: {e}")
+            stats['error'] = str(e)
+        return stats
+        
+    async def close(self) -> bool:
+        """Close database connections"""
+        # This method is called during shutdown
+        logger.info("Closing database connections...")
+        # In aiosqlite, connections are automatically closed when the context manager exits
+        # This method exists for explicit cleanup during shutdown
+        return True
                 cursor = await db.execute("""
                     DELETE FROM sessions WHERE last_active < ?
                 """, (cutoff_date,))
@@ -310,3 +359,5 @@ class MemoryDAL:
         except Exception as e:
             logger.error(f"Failed to cleanup expired sessions: {e}")
             return 0
+
+
