@@ -176,7 +176,7 @@
         const testOutputContent = document.getElementById('test-output-content');
 
         // Configuration
-        const PROXY_URL = 'http://127.0.0.1:5111';
+        const PROXY_URL = 'http://127.0.0.1:8000';
         let isProcessing = false;
 
         // Agent configurations as specified in Master Document
@@ -207,7 +207,7 @@
                 updateStatus("No session found. Creating...");
                 try {
                     // This is the ONLY place a new session should be created.
-                    const response = await fetch('http://127.0.0.1:5111/api/v2/sessions', { 
+                    const response = await fetch('http://127.0.0.1:8000/api/v2/sessions', { 
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -456,7 +456,7 @@
                 const data = await response.json();
                 
                 if (data.status === 'healthy') {
-                    updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
+                    updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:8000');
                     sendButton.disabled = false;
                 } else {
                     throw new Error('Server not healthy');
@@ -698,7 +698,7 @@ As the Supervisor, analyze this test failure and provide a precise, corrective c
                 updateVerificationStatus('❌ System Error', `Cycle failed: ${error.message}`, 'red');
             } finally {
                 isProcessing = false;
-                updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
+                updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:8000');
             }
         }
 
