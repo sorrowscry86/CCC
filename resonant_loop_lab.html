@@ -106,6 +106,34 @@
             </div>
         </div>
 
+        <!-- Stage 3: Verification Status Panel -->
+        <div id="verification-panel" class="bg-gray-800 rounded-lg p-4 mb-6" style="display: none;">
+            <h3 class="text-lg font-semibold mb-3">🔬 Crucible Protocol - Verification Status</h3>
+            <div class="grid md:grid-cols-2 gap-4">
+                <div>
+                    <div class="flex items-center space-x-2">
+                        <div id="verification-indicator" class="w-3 h-3 rounded-full bg-gray-500"></div>
+                        <span id="verification-status" class="text-sm font-medium">Awaiting Code...</span>
+                    </div>
+                    <div id="verification-details" class="text-xs text-gray-400 mt-2">
+                        No verification in progress
+                    </div>
+                </div>
+                <div>
+                    <div id="retry-counter" class="text-sm text-gray-400">
+                        Attempts: <span id="attempt-count">0</span>/3
+                    </div>
+                    <div id="verification-progress" class="w-full bg-gray-700 rounded-full h-2 mt-2">
+                        <div id="progress-bar" class="bg-blue-600 h-2 rounded-full" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="verification-output" class="mt-4 p-3 bg-gray-900 rounded-md text-xs font-mono" style="display: none;">
+                <div class="text-gray-400 mb-2">Test Output:</div>
+                <div id="test-output-content"></div>
+            </div>
+        </div>
+
         <!-- Controls -->
         <div class="flex justify-center space-x-4">
             <button 
@@ -136,8 +164,19 @@
         const temperatureInput = document.getElementById('temperature-input');
         const temperatureValue = document.getElementById('temperature-value');
 
+        // Stage 3: Verification Panel Elements
+        const verificationPanel = document.getElementById('verification-panel');
+        const verificationIndicator = document.getElementById('verification-indicator');
+        const verificationStatus = document.getElementById('verification-status');
+        const verificationDetails = document.getElementById('verification-details');
+        const retryCounter = document.getElementById('retry-counter');
+        const attemptCount = document.getElementById('attempt-count');
+        const progressBar = document.getElementById('progress-bar');
+        const verificationOutput = document.getElementById('verification-output');
+        const testOutputContent = document.getElementById('test-output-content');
+
         // Configuration
-        const PROXY_URL = 'http://127.0.0.1:5111';
+        const PROXY_URL = 'http://127.0.0.1:8000';
         let isProcessing = false;
 
         // Agent configurations as specified in Master Document
@@ -168,7 +207,7 @@
                 updateStatus("No session found. Creating...");
                 try {
                     // This is the ONLY place a new session should be created.
-                    const response = await fetch('http://127.0.0.1:5111/api/v2/sessions', { 
+                    const response = await fetch('http://127.0.0.1:8000/api/v2/sessions', { 
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -300,6 +339,91 @@
         // Initialize memory manager
         const memoryManager = new CCCMemoryManager();
 
+        // Stage 3: Verification Functions
+        function updateVerificationStatus(status, details = '', indicator = 'gray') {
+            verificationStatus.textContent = status;
+            verificationDetails.textContent = details;
+            
+            // Update indicator color
+            const colorMap = {
+                'gray': 'bg-gray-500',
+                'yellow': 'bg-yellow-500', 
+                'green': 'bg-green-500',
+                'red': 'bg-red-500',
+                'orange': 'bg-orange-500'
+            };
+            verificationIndicator.className = `w-3 h-3 rounded-full ${colorMap[indicator] || 'bg-gray-500'}`;
+            
+            // Show verification panel when there's activity
+            if (status !== 'Awaiting Code...') {
+                verificationPanel.style.display = 'block';
+            }
+        }
+
+        function updateAttemptCounter(current, max = 3) {
+            attemptCount.textContent = current;
+            const percentage = (current / max) * 100;
+            progressBar.style.width = `${percentage}%`;
+            
+            // Change color based on attempts
+            if (current >= 3) {
+                progressBar.className = 'bg-red-600 h-2 rounded-full';
+            } else if (current >= 2) {
+                progressBar.className = 'bg-yellow-600 h-2 rounded-full';
+            } else {
+                progressBar.className = 'bg-blue-600 h-2 rounded-full';
+            }
+        }
+
+        function showVerificationOutput(output, isError = false) {
+            testOutputContent.innerHTML = output.replace(/\n/g, '<br>');
+            testOutputContent.className = isError ? 'text-red-400' : 'text-green-400';
+            verificationOutput.style.display = 'block';
+        }
+
+        function hideVerificationOutput() {
+            verificationOutput.style.display = 'none';
+        }
+
+        async function verifyCode(codeToTest, testCode) {
+            try {
+                updateVerificationStatus('Running Crucible...', 'Executing tests in isolated environment', 'yellow');
+                
+                const response = await fetch(`${PROXY_URL}/verify/code`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        code_to_test: codeToTest,
+                        test_code: testCode
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Verification request failed: ${response.status}`);
+                }
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    updateVerificationStatus('✅ Verification Passed', 'All tests passed successfully', 'green');
+                    showVerificationOutput(result.output, false);
+                } else {
+                    updateVerificationStatus('❌ Verification Failed', 'Tests failed - generating correction', 'red');
+                    showVerificationOutput(result.output + '\n\n' + result.error_output, true);
+                }
+                
+                return result;
+                
+            } catch (error) {
+                updateVerificationStatus('❌ Verification Error', `System error: ${error.message}`, 'red');
+                console.error('Verification error:', error);
+                return { success: false, error: error.message };
+            }
+        }
+
         // Ensure this is called on page load.
         document.addEventListener('DOMContentLoaded', async () => {
             checkServerStatus();
@@ -332,7 +456,7 @@
                 const data = await response.json();
                 
                 if (data.status === 'healthy') {
-                    updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
+                    updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:8000');
                     sendButton.disabled = false;
                 } else {
                     throw new Error('Server not healthy');
@@ -421,71 +545,160 @@
             return data.choices[0].message.content;
         }
 
-        // Execute the 3-turn Covenant Command Cycle
+        // Execute the Enhanced Stage 3 Covenant Command Cycle with Crucible Protocol
         async function initiateCovenantCycle() {
             const directive = messageInput.value.trim();
             if (!directive || isProcessing) return;
 
             isProcessing = true;
-            updateStatus('processing', 'Initiating Covenant Command Cycle...');
+            updateStatus('processing', 'Initiating Stage 3 Covenant Command Cycle...');
+            
+            // Reset verification panel
+            updateVerificationStatus('Awaiting Code...', 'No verification in progress', 'gray');
+            updateAttemptCounter(0);
+            hideVerificationOutput();
             
             // Clear previous conversation and add Prime Architect directive
             clearChat();
             addMessage('Wykeve (Prime Architect)', directive, 'text-blue-400');
             messageInput.value = '';
             
+            // Stage 3 Variables
+            let maxRetries = 3;
+            let currentAttempt = 0;
+            let codeGenerated = null;
+            let testGenerated = null;
+            let verificationPassed = false;
+            
             try {
-                // Turn 1: Prime Architect → Beatrice (Supervisor analyzes the directive)
+                // Phase 1: Enhanced Supervisor Analysis with TDD Mandate
                 addTypingIndicator('Beatrice');
+                const enhancedBeatricePrompt = `Prime Architect Directive: "${directive}"
+
+As the Supervisor in Stage 3 of the Covenant Command Cycle, you must now enforce Test-Driven Development (TDD). 
+
+Your analysis must:
+1. Break down the directive into specific, testable requirements
+2. Identify what function(s) need to be created
+3. Specify the exact test assertions that must pass
+4. Plan for both the implementation AND its corresponding test
+
+Provide clear, actionable guidance that will result in the Executor creating both functional code and comprehensive tests.`;
+
                 const beatriceAnalysis = await callOpenAI(
-                    [{ role: 'user', content: `Prime Architect Directive: "${directive}"\n\nAs the Supervisor, analyze this directive and provide clear, actionable guidance for the Executor to follow.` }],
+                    [{ role: 'user', content: enhancedBeatricePrompt }],
                     agents.beatrice.role
                 );
                 removeTypingIndicator();
                 addMessage(`${agents.beatrice.name} (${agents.beatrice.title})`, beatriceAnalysis, agents.beatrice.color);
                 
-                // Small delay between turns
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 
-                // Turn 2: Beatrice → Codey (Executor implements based on supervision)
-                addTypingIndicator('Codey');
-                const codeyExecution = await callOpenAI(
-                    [
-                        { role: 'user', content: `Prime Architect Directive: "${directive}"` },
-                        { role: 'assistant', content: beatriceAnalysis },
-                        { role: 'user', content: 'Based on the Supervisor\'s analysis and guidance above, execute the directive. Provide the implementation, solution, or creative output as directed.' }
-                    ],
-                    agents.codey.role
-                );
-                removeTypingIndicator();
-                addMessage(`${agents.codey.name} (${agents.codey.title})`, codeyExecution, agents.codey.color);
+                // Phase 2: Self-Healing Loop - Code Generation and Verification
+                while (!verificationPassed && currentAttempt < maxRetries) {
+                    currentAttempt++;
+                    updateAttemptCounter(currentAttempt);
+                    
+                    if (currentAttempt > 1) {
+                        updateVerificationStatus(`❌ Verification Failed. Generating correction... (Attempt ${currentAttempt}/3)`, 'Analyzing failure and generating fix', 'red');
+                    }
+                    
+                    // Turn 2A: Codey generates the function
+                    addTypingIndicator('Codey');
+                    const codePrompt = currentAttempt === 1 
+                        ? `Prime Architect Directive: "${directive}"
+Supervisor Analysis: ${beatriceAnalysis}
+
+Based on the Supervisor's analysis, create the requested function. Provide ONLY the Python function code, clearly formatted.`
+                        : `The previous code failed verification. Here's the failure analysis:
+
+${testGenerated ? `Test Code:\n${testGenerated}\n\n` : ''}
+${codeGenerated ? `Previous Code:\n${codeGenerated}\n\n` : ''}
+
+Fix the identified issue and provide the corrected function code.`;
+
+                    codeGenerated = await callOpenAI(
+                        [{ role: 'user', content: codePrompt }],
+                        agents.codey.role
+                    );
+                    removeTypingIndicator();
+                    addMessage(`${agents.codey.name} (${agents.codey.title}) - Code`, codeGenerated, agents.codey.color);
+                    
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Turn 2B: Codey generates the test (TDD Mandate)
+                    addTypingIndicator('Codey');
+                    const testPrompt = `Now write a pytest test for the function you just created. The test should:
+1. Import the function from main.py
+2. Test the exact requirements specified in the directive
+3. Use proper assert statements
+4. Follow pytest conventions
+
+Provide ONLY the test code, clearly formatted.`;
+
+                    testGenerated = await callOpenAI(
+                        [{ role: 'user', content: testPrompt }],
+                        agents.codey.role
+                    );
+                    removeTypingIndicator();
+                    addMessage(`${agents.codey.name} (${agents.codey.title}) - Test`, testGenerated, agents.codey.color);
+                    
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Phase 3: Crucible Protocol - Automated Verification
+                    addMessage('System', '🔬 Initiating Crucible Protocol - Automated Verification', 'text-yellow-400');
+                    
+                    const verificationResult = await verifyCode(codeGenerated, testGenerated);
+                    
+                    if (verificationResult.success) {
+                        verificationPassed = true;
+                        addMessage('System', '✅ Crucible Protocol: VERIFICATION PASSED - Code is functionally correct', 'text-green-400');
+                        break;
+                    } else {
+                        addMessage('System', `❌ Crucible Protocol: VERIFICATION FAILED (Attempt ${currentAttempt}/3)`, 'text-red-400');
+                        
+                        if (currentAttempt < maxRetries) {
+                            // Turn 3: Beatrice analyzes failure and provides correction guidance
+                            addTypingIndicator('Beatrice');
+                            const failureAnalysisPrompt = `FAILURE ANALYSIS DOSSIER:
+
+Original Directive: "${directive}"
+Generated Code: ${codeGenerated}
+Test Code: ${testGenerated}
+Error Output: ${verificationResult.output}
+${verificationResult.error_output ? `Error Details: ${verificationResult.error_output}` : ''}
+
+As the Supervisor, analyze this test failure and provide a precise, corrective command to the Executor. Identify the exact issue and specify how to fix it.`;
+
+                            const beatriceCorrection = await callOpenAI(
+                                [{ role: 'user', content: failureAnalysisPrompt }],
+                                agents.beatrice.role
+                            );
+                            removeTypingIndicator();
+                            addMessage(`${agents.beatrice.name} (${agents.beatrice.title}) - Correction`, beatriceCorrection, agents.beatrice.color);
+                            
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                    }
+                }
                 
-                // Small delay between turns
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                // Turn 3: Codey → Beatrice (Supervisor provides final review/validation)
-                addTypingIndicator('Beatrice');
-                const beatriceReview = await callOpenAI(
-                    [
-                        { role: 'user', content: `Prime Architect Directive: "${directive}"` },
-                        { role: 'assistant', content: beatriceAnalysis },
-                        { role: 'user', content: `Executor's Implementation: ${codeyExecution}\n\nAs the Supervisor, provide your final review and assessment of the Executor's work. Does it fulfill the Prime Architect's directive?` }
-                    ],
-                    agents.beatrice.role
-                );
-                removeTypingIndicator();
-                addMessage(`${agents.beatrice.name} (${agents.beatrice.title})`, beatriceReview, agents.beatrice.color);
-                
-                // Cycle complete
-                addMessage('System', '✅ Covenant Command Cycle Complete - 3 turns executed successfully', 'text-purple-400');
+                // Phase 4: Final Assessment
+                if (verificationPassed) {
+                    addMessage('System', '🎯 Stage 3 Covenant Command Cycle: COMPLETE - Self-healing protocol successful', 'text-purple-400');
+                    updateVerificationStatus('✅ Self-Healing Complete', 'Code passed verification and is functionally correct', 'green');
+                } else {
+                    addMessage('System', '⚠️ Stage 3 Covenant Command Cycle: ESCALATION REQUIRED - Maximum retries exceeded', 'text-orange-400');
+                    updateVerificationStatus('⚠️ Escalation Required', `Failed after ${maxRetries} attempts - requires Prime Architect intervention`, 'orange');
+                }
                 
             } catch (error) {
                 removeTypingIndicator();
                 addMessage('System', `❌ Cycle Error: ${error.message}`, 'text-red-400');
                 console.error('Covenant cycle error:', error);
+                updateVerificationStatus('❌ System Error', `Cycle failed: ${error.message}`, 'red');
             } finally {
                 isProcessing = false;
-                updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:5111');
+                updateStatus('connected', 'Covenant API Proxy is running on http://127.0.0.1:8000');
             }
         }
 
