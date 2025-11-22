@@ -23,29 +23,42 @@ from dotenv import load_dotenv
 # Add src directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import crucible module for Stage 3 verification protocol
+# Import configuration and crucible module
+from config import config
 import crucible
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+log_level = logging.DEBUG if config.DEBUG else logging.INFO
+logging.basicConfig(level=log_level)
 logger = logging.getLogger(__name__)
+
+# Validate configuration
+try:
+    config.validate()
+except ValueError as e:
+    logger.error(f"Configuration error: {e}")
+    raise
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
 
-# Configuration
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-OPENAI_API_BASE = 'https://api.openai.com/v1'
-HOST = '127.0.0.1'  # Back to localhost for testing
-PORT = 8000  # Try a different port
+# Configure CORS with environment-based settings
+cors_config = config.get_cors_config()
+if cors_config:
+    CORS(app, **cors_config)
+    if config.DEBUG:
+        logger.info(f"[CONFIG] CORS enabled with origins: {cors_config.get('origins', '*')}")
+else:
+    logger.warning("[CONFIG] CORS disabled")
 
-if not OPENAI_API_KEY:
-    logger.error("OPENAI_API_KEY environment variable is not set!")
-    raise ValueError("OPENAI_API_KEY is required but not found in environment variables")
+# Configuration aliases for backward compatibility
+OPENAI_API_KEY = config.OPENAI_API_KEY
+OPENAI_API_BASE = config.OPENAI_API_BASE
+HOST = config.HOST
+PORT = config.PORT
 
 # Initialize memory service (global variables)
 server_start_time = time.time()
@@ -99,13 +112,16 @@ def api_error_handler(service_required=True, error_prefix="API error"):
     return decorator
 
 
-def call_openai_api(endpoint, data, timeout=30):
+def call_openai_api(endpoint, data, timeout=None):
     """Make a request to the OpenAI API"""
+    if timeout is None:
+        timeout = config.OPENAI_API_TIMEOUT
+
     headers = {
         'Authorization': f'Bearer {OPENAI_API_KEY}',
         'Content-Type': 'application/json'
     }
-    
+
     logger.info(f"Calling OpenAI API: {endpoint} with model {data.get('model', 'unknown')}")
     
     try:
@@ -187,15 +203,16 @@ def initialize_memory_service_background():
         # Add timeout for initialization
         try:
             # Use the AsyncioLoopManager for cleaner async handling
-            result = AsyncioLoopManager.run_async(initialize_memory_service(), timeout=60.0)
-            
+            init_timeout = float(config.MEMORY_INIT_TIMEOUT)
+            result = AsyncioLoopManager.run_async(initialize_memory_service(), timeout=init_timeout)
+
             if memory_initialized:
                 logger.info("[MEMORY] Memory service: ENABLED")
             else:
                 logger.info("[MEMORY] Memory service: DISABLED")
-                
+
         except asyncio.TimeoutError:
-            logger.error("[MEMORY] Memory service initialization timed out after 60 seconds")
+            logger.error(f"[MEMORY] Memory service initialization timed out after {config.MEMORY_INIT_TIMEOUT} seconds")
             memory_initializing = False
             memory_initialized = False
             
@@ -639,18 +656,19 @@ if __name__ == '__main__':
     memory_thread.start()
     
     try:
+        logger.info(f"[SERVER] Debug mode: {config.DEBUG}")
         app.run(
             host=HOST,
             port=PORT,
-            debug=True,
+            debug=config.DEBUG,
             use_reloader=False,
             threaded=True  # Enable threading for the Flask app
         )
     except Exception as e:
         logger.error(f"Failed to start Flask server: {e}")
         logger.error("This could be due to:")
-        logger.error("- Port 8000 already in use")
-        logger.error("- Windows Firewall blocking the connection")
+        logger.error(f"- Port {PORT} already in use")
+        logger.error("- Firewall blocking the connection")
         logger.error("- Insufficient permissions")
         sys.exit(1)
 

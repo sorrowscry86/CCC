@@ -53,45 +53,71 @@ class CrucibleEnvironment:
     def run_tests(self, timeout=30):
         """
         Execute pytest in the workspace and capture results
-        
+
         Args:
             timeout: Maximum time to wait for tests to complete (seconds)
-            
+
         Returns:
             dict: {'returncode': int, 'stdout': str, 'stderr': str, 'success': bool}
         """
         if not self.workspace:
             raise RuntimeError("Workspace not created. Call create_workspace() first.")
-        
+
         try:
             logger.info(f"[CRUCIBLE] Running tests in workspace: {self.workspace}")
-            
-            # Execute pytest with verbose output and capture all results
+
+            # Execute pytest with verbose output and resource constraints
+            # --timeout flag (pytest-timeout plugin) ensures individual tests don't hang (if plugin available)
+            # subprocess timeout ensures overall execution doesn't hang
+            # Individual test timeout is slightly less than overall timeout to allow graceful handling
+            individual_timeout = max(timeout - 5, 5)  # At least 5 seconds, buffer for pytest overhead
+
+            # Build pytest command
+            pytest_cmd = ['python', '-m', 'pytest', self.workspace, '-v', '--tb=short']
+
+            # Add timeout if pytest-timeout is available
+            # Check by trying to import it
+            try:
+                import pytest_timeout  # noqa: F401
+                pytest_cmd.append(f'--timeout={individual_timeout}')
+                logger.debug(f"[CRUCIBLE] Using pytest-timeout with {individual_timeout}s limit")
+            except ImportError:
+                logger.debug("[CRUCIBLE] pytest-timeout not available, relying on subprocess timeout only")
+
             result = subprocess.run(
-                ['python', '-m', 'pytest', self.workspace, '-v', '--tb=short'],
+                pytest_cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=self.workspace
             )
-            
+
             success = result.returncode == 0
-            
+
             logger.info(f"[CRUCIBLE] Test execution completed - Success: {success}")
-            
+
             return {
                 'returncode': result.returncode,
                 'stdout': result.stdout,
                 'stderr': result.stderr,
                 'success': success
             }
-            
-        except subprocess.TimeoutExpired:
+
+        except subprocess.TimeoutExpired as e:
             logger.error(f"[CRUCIBLE] Test execution timed out after {timeout} seconds")
+            # Capture any partial output that was produced before timeout
+            stdout = e.stdout.decode('utf-8') if e.stdout else ''
+            stderr = e.stderr.decode('utf-8') if e.stderr else ''
+
+            # Include partial output in error message for better debugging
+            timeout_msg = f'\n\n=== TIMEOUT ERROR ===\nTest execution timed out after {timeout} seconds.\n'
+            if stdout:
+                timeout_msg += f'\nPartial output captured before timeout:\n{stdout[:500]}\n'
+
             return {
                 'returncode': -1,
-                'stdout': '',
-                'stderr': f'Test execution timed out after {timeout} seconds',
+                'stdout': stdout,
+                'stderr': stderr + timeout_msg,
                 'success': False
             }
         except Exception as e:
