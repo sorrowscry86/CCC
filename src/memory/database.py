@@ -306,7 +306,8 @@ class MemoryDAL:
         except Exception as e:
             logger.error(f"Error cleaning up expired sessions: {e}")
             return -1
-async def get_stats(self) -> Dict[str, int]:
+
+    async def get_stats(self) -> Dict[str, int]:
         """Get database statistics"""
         stats = {}
         try:
@@ -314,23 +315,23 @@ async def get_stats(self) -> Dict[str, int]:
                 # Count sessions
                 cursor = await db.execute("SELECT COUNT(*) FROM sessions")
                 stats['sessions_count'] = (await cursor.fetchone())[0]
-                
+
                 # Count conversations
                 cursor = await db.execute("SELECT COUNT(*) FROM conversations")
                 stats['conversations_count'] = (await cursor.fetchone())[0]
-                
+
                 # Count turns
                 cursor = await db.execute("SELECT COUNT(*) FROM turns")
                 stats['turns_count'] = (await cursor.fetchone())[0]
-                
+
                 # Count agent states
                 cursor = await db.execute("SELECT COUNT(*) FROM agent_states")
                 stats['agent_states_count'] = (await cursor.fetchone())[0]
-                
+
                 # Count context summaries
                 cursor = await db.execute("SELECT COUNT(*) FROM context_summaries")
                 stats['context_summaries_count'] = (await cursor.fetchone())[0]
-                
+
                 # Count causal events if table exists
                 try:
                     cursor = await db.execute("SELECT COUNT(*) FROM causal_events")
@@ -349,15 +350,5 @@ async def get_stats(self) -> Dict[str, int]:
         # In aiosqlite, connections are automatically closed when the context manager exits
         # This method exists for explicit cleanup during shutdown
         return True
-                cursor = await db.execute("""
-                    DELETE FROM sessions WHERE last_active < ?
-                """, (cutoff_date,))
-                deleted_count = cursor.rowcount
-                await db.commit()
-                logger.info(f"Cleaned up {deleted_count} expired sessions")
-                return deleted_count
-        except Exception as e:
-            logger.error(f"Failed to cleanup expired sessions: {e}")
-            return 0
 
 
