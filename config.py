@@ -14,6 +14,7 @@ class Config:
     HOST: str = os.getenv('HOST', '127.0.0.1')
     PORT: int = int(os.getenv('PORT', '8000'))
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
+    LOG_SENSITIVE_DATA: bool = os.getenv('LOG_SENSITIVE_DATA', 'False').lower() in ('true', '1', 'yes')
 
     # OpenAI API Configuration
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')

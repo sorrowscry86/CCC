@@ -364,10 +364,13 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                     )
                 )
                 
-                # Debug logging for causal memory
-                causal_narrative = context.get('causal_narrative', 'None retrieved')
-                logger.info(f"CAUSAL DEBUG - Session {session_id[:8]}: Retrieved narrative length: {len(causal_narrative)} chars")
-                logger.info(f"CAUSAL DEBUG - Narrative preview: {causal_narrative[:100]}...")
+                # Debug logging for causal memory (only if explicitly enabled for security)
+                if config.LOG_SENSITIVE_DATA or config.DEBUG:
+                    causal_narrative = context.get('causal_narrative', 'None retrieved')
+                    logger.info(f"CAUSAL DEBUG - Session {session_id[:8]}: Retrieved narrative length: {len(causal_narrative)} chars")
+                    logger.info(f"CAUSAL DEBUG - Narrative preview: {causal_narrative[:100]}...")
+                else:
+                    logger.debug(f"CAUSAL - Session {session_id[:8]}: Retrieved causal context (content redacted)")
                 
                 # Add enhanced context to messages if available
                 context_parts = []
@@ -614,12 +617,40 @@ def memory_service_status():
     return jsonify(status)
 
 
+def validate_openai_connection():
+    """Validate OpenAI API connectivity on startup"""
+    logger.info("[HEALTHCHECK] Validating OpenAI API connection...")
+
+    try:
+        # Make a minimal API call to validate connectivity and API key
+        test_data = {
+            'model': 'gpt-3.5-turbo',
+            'messages': [{'role': 'user', 'content': 'test'}],
+            'max_tokens': 5
+        }
+
+        response, error = call_openai_api('chat/completions', test_data, timeout=10)
+
+        if error:
+            logger.error(f"[HEALTHCHECK] OpenAI API validation failed: {error}")
+            logger.error("[HEALTHCHECK] Server will start but OpenAI calls will fail")
+            logger.error("[HEALTHCHECK] Please check your OPENAI_API_KEY")
+            return False
+        else:
+            logger.info("[HEALTHCHECK] ✅ OpenAI API connection validated successfully")
+            return True
+
+    except Exception as e:
+        logger.error(f"[HEALTHCHECK] OpenAI API validation error: {e}")
+        logger.error("[HEALTHCHECK] Server will start but OpenAI calls may fail")
+        return False
+
+
 if __name__ == '__main__':
     # Start the server first, then initialize memory in background
     logger.info("[START] Covenant API Proxy is starting...")
     logger.info(f"[SERVER] Server running on http://{HOST}:{PORT}")
-    logger.info("[NOTE] Make sure OPENAI_API_KEY is set in your environment variables")
-    
+
     import signal
     import atexit
     
@@ -649,7 +680,10 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
-    
+
+    # Validate OpenAI API connection
+    validate_openai_connection()
+
     # Start memory service initialization in a background thread
     memory_thread = threading.Thread(target=initialize_memory_service_background)
     memory_thread.daemon = True

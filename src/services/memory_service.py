@@ -197,11 +197,18 @@ class MemoryService:
                     conversation_dicts
                 )
                 
-                # Get turns for relevant conversations (limited)
-                for conv_dict in relevant_conversations[:5]:  # Limit to top 5 relevant
-                    turns = await self.dal.get_turns(conv_dict['conversation_id'])
-                    conv_dict['turns'] = [turn.to_dict() for turn in turns[-max_context_turns:]]
-                
+                # Get turns for relevant conversations (limited) - optimized to avoid N+1 queries
+                top_relevant = relevant_conversations[:5]  # Limit to top 5 relevant
+                if top_relevant:
+                    # Batch fetch all turns in a single query
+                    conversation_ids = [conv['conversation_id'] for conv in top_relevant]
+                    turns_by_conversation = await self.dal.get_turns_batch(conversation_ids)
+
+                    # Attach turns to each conversation
+                    for conv_dict in top_relevant:
+                        turns = turns_by_conversation.get(conv_dict['conversation_id'], [])
+                        conv_dict['turns'] = [turn.to_dict() for turn in turns[-max_context_turns:]]
+
                 context['relevant_conversations'] = relevant_conversations
                 
                 # Generate traditional context summary
