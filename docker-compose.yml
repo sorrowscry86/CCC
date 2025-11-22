@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  ccc-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ccc-covenant-proxy
+    ports:
+      - "5111:5111"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount database directory for persistence
+      - ./database:/app/database
+      # Mount memory databases for persistence
+      - ccc-memory:/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5111/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ccc-network
+
+  # Optional: Add a web interface container if needed in the future
+  # ccc-web:
+  #   image: nginx:alpine
+  #   container_name: ccc-web-interface
+  #   ports:
+  #     - "8080:80"
+  #   volumes:
+  #     - ./resonant_loop_lab.html:/usr/share/nginx/html/index.html:ro
+  #   depends_on:
+  #     - ccc-proxy
+  #   networks:
+  #     - ccc-network
+
+volumes:
+  ccc-memory:
+    driver: local
+
+networks:
+  ccc-network:
+    driver: bridge
