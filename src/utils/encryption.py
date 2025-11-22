@@ -35,13 +35,18 @@ class EncryptionService:
     def _get_or_create_key(self) -> bytes:
         """Get encryption key from environment or generate one"""
         env_key = os.getenv('CCC_ENCRYPTION_KEY')
-        
+
         if env_key:
-            # Use provided key
+            # Use provided key with installation-specific salt
+            # Generate salt from a combination of environment and machine info
+            import hashlib
+            salt_source = f"{env_key[:8]}{os.path.abspath('.')}"
+            salt = hashlib.sha256(salt_source.encode()).digest()[:16]
+
             kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=32,
-                salt=b'ccc_salt_2024',  # Fixed salt for consistency
+                salt=salt,
                 iterations=100000,
             )
             key = base64.urlsafe_b64encode(kdf.derive(env_key.encode()))

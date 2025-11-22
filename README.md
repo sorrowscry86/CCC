@@ -1,5 +1,10 @@
 # CCC - Covenant Command Cycle
 
+[![Python CI](https://github.com/sorrowscry86/CCC/actions/workflows/python-ci.yml/badge.svg)](https://github.com/sorrowscry86/CCC/actions/workflows/python-ci.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
+
 **Stage 2: Persistent Memory & Context Retention** - An enhanced multi-agent AI system with persistent state memory, implementing supervised agentic workflows between Beatrice (Supervisor) and Codey (Executor) through a memory-enabled Flask proxy server.
 
 ## Project Overview
