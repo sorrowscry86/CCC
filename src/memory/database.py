@@ -185,8 +185,8 @@ class MemoryDAL:
             async with aiosqlite.connect(self.db_path) as db:
                 async with db.execute("""
                     SELECT turn_id, conversation_id, turn_number, agent, content, timestamp, metadata
-                    FROM turns 
-                    WHERE conversation_id = ? 
+                    FROM turns
+                    WHERE conversation_id = ?
                     ORDER BY turn_number ASC
                 """, (conversation_id,)) as cursor:
                     async for row in cursor:
@@ -203,7 +203,43 @@ class MemoryDAL:
         except Exception as e:
             logger.error(f"Failed to get turns: {e}")
             return []
-    
+
+    async def get_turns_batch(self, conversation_ids: List[str]) -> Dict[str, List[Turn]]:
+        """Get turns for multiple conversations in a single query (fixes N+1 pattern)"""
+        try:
+            if not conversation_ids:
+                return {}
+
+            turns_by_conversation = {conv_id: [] for conv_id in conversation_ids}
+
+            async with aiosqlite.connect(self.db_path) as db:
+                # Use IN clause with placeholders
+                placeholders = ','.join('?' * len(conversation_ids))
+                query = f"""
+                    SELECT turn_id, conversation_id, turn_number, agent, content, timestamp, metadata
+                    FROM turns
+                    WHERE conversation_id IN ({placeholders})
+                    ORDER BY conversation_id, turn_number ASC
+                """
+
+                async with db.execute(query, conversation_ids) as cursor:
+                    async for row in cursor:
+                        turn = Turn(
+                            turn_id=row[0],
+                            conversation_id=row[1],
+                            turn_number=row[2],
+                            agent=row[3],
+                            content=row[4],
+                            timestamp=datetime.fromisoformat(row[5]),
+                            metadata=json.loads(row[6] or '{}')
+                        )
+                        turns_by_conversation[row[1]].append(turn)
+
+            return turns_by_conversation
+        except Exception as e:
+            logger.error(f"Failed to get turns batch: {e}")
+            return {conv_id: [] for conv_id in conversation_ids}
+
     # Agent State Management
     async def get_agent_state(self, session_id: str, agent: str) -> Optional[AgentState]:
         """Get agent state for a session"""

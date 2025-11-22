@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import subprocess
 import logging
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +19,15 @@ logger = logging.getLogger(__name__)
 class CrucibleEnvironment:
     """
     The Crucible - A secure, ephemeral testing environment
-    
+
     Each verification task creates a temporary directory, writes code and test files,
     executes tests in a sandboxed subprocess, and then atomizes the workspace.
     """
-    
-    def __init__(self):
-        self.workspace = None
-    
-    def create_workspace(self):
+
+    def __init__(self) -> None:
+        self.workspace: Optional[str] = None
+
+    def create_workspace(self) -> str:
         """Create a temporary workspace for code testing"""
         try:
             self.workspace = tempfile.mkdtemp(prefix="crucible_", suffix="_workspace")
@@ -35,12 +36,12 @@ class CrucibleEnvironment:
         except Exception as e:
             logger.error(f"[CRUCIBLE] Failed to create workspace: {e}")
             raise
-    
-    def write_file(self, filename, content):
+
+    def write_file(self, filename: str, content: str) -> None:
         """Safely write content to a file within the workspace"""
         if not self.workspace:
             raise RuntimeError("Workspace not created. Call create_workspace() first.")
-        
+
         file_path = os.path.join(self.workspace, filename)
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -49,49 +50,75 @@ class CrucibleEnvironment:
         except Exception as e:
             logger.error(f"[CRUCIBLE] Failed to write file {filename}: {e}")
             raise
-    
-    def run_tests(self, timeout=30):
+
+    def run_tests(self, timeout: int = 30) -> Dict[str, Any]:
         """
         Execute pytest in the workspace and capture results
-        
+
         Args:
             timeout: Maximum time to wait for tests to complete (seconds)
-            
+
         Returns:
             dict: {'returncode': int, 'stdout': str, 'stderr': str, 'success': bool}
         """
         if not self.workspace:
             raise RuntimeError("Workspace not created. Call create_workspace() first.")
-        
+
         try:
             logger.info(f"[CRUCIBLE] Running tests in workspace: {self.workspace}")
-            
-            # Execute pytest with verbose output and capture all results
+
+            # Execute pytest with verbose output and resource constraints
+            # --timeout flag (pytest-timeout plugin) ensures individual tests don't hang (if plugin available)
+            # subprocess timeout ensures overall execution doesn't hang
+            # Individual test timeout is slightly less than overall timeout to allow graceful handling
+            individual_timeout = max(timeout - 5, 5)  # At least 5 seconds, buffer for pytest overhead
+
+            # Build pytest command
+            pytest_cmd = ['python', '-m', 'pytest', self.workspace, '-v', '--tb=short']
+
+            # Add timeout if pytest-timeout is available
+            # Check by trying to import it
+            try:
+                import pytest_timeout  # noqa: F401
+                pytest_cmd.append(f'--timeout={individual_timeout}')
+                logger.debug(f"[CRUCIBLE] Using pytest-timeout with {individual_timeout}s limit")
+            except ImportError:
+                logger.debug("[CRUCIBLE] pytest-timeout not available, relying on subprocess timeout only")
+
             result = subprocess.run(
-                ['python', '-m', 'pytest', self.workspace, '-v', '--tb=short'],
+                pytest_cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=self.workspace
             )
-            
+
             success = result.returncode == 0
-            
+
             logger.info(f"[CRUCIBLE] Test execution completed - Success: {success}")
-            
+
             return {
                 'returncode': result.returncode,
                 'stdout': result.stdout,
                 'stderr': result.stderr,
                 'success': success
             }
-            
-        except subprocess.TimeoutExpired:
+
+        except subprocess.TimeoutExpired as e:
             logger.error(f"[CRUCIBLE] Test execution timed out after {timeout} seconds")
+            # Capture any partial output that was produced before timeout
+            stdout = e.stdout.decode('utf-8') if e.stdout else ''
+            stderr = e.stderr.decode('utf-8') if e.stderr else ''
+
+            # Include partial output in error message for better debugging
+            timeout_msg = f'\n\n=== TIMEOUT ERROR ===\nTest execution timed out after {timeout} seconds.\n'
+            if stdout:
+                timeout_msg += f'\nPartial output captured before timeout:\n{stdout[:500]}\n'
+
             return {
                 'returncode': -1,
-                'stdout': '',
-                'stderr': f'Test execution timed out after {timeout} seconds',
+                'stdout': stdout,
+                'stderr': stderr + timeout_msg,
                 'success': False
             }
         except Exception as e:
@@ -103,7 +130,7 @@ class CrucibleEnvironment:
                 'success': False
             }
     
-    def cleanup_workspace(self):
+    def cleanup_workspace(self) -> None:
         """Recursively delete the temporary workspace"""
         if self.workspace and os.path.exists(self.workspace):
             try:
@@ -113,18 +140,18 @@ class CrucibleEnvironment:
             except Exception as e:
                 logger.error(f"[CRUCIBLE] Failed to cleanup workspace: {e}")
                 raise
-    
-    def __enter__(self):
+
+    def __enter__(self) -> 'CrucibleEnvironment':
         """Context manager entry"""
         self.create_workspace()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit - always cleanup workspace"""
         self.cleanup_workspace()
 
 
-def verify_code(code_to_test, test_code, timeout=30):
+def verify_code(code_to_test: str, test_code: str, timeout: int = 30) -> Dict[str, Any]:
     """
     Convenience function to verify code with its test in an isolated environment
     

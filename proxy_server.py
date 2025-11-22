@@ -23,29 +23,42 @@ from dotenv import load_dotenv
 # Add src directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import crucible module for Stage 3 verification protocol
+# Import configuration and crucible module
+from config import config
 import crucible
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+log_level = logging.DEBUG if config.DEBUG else logging.INFO
+logging.basicConfig(level=log_level)
 logger = logging.getLogger(__name__)
+
+# Validate configuration
+try:
+    config.validate()
+except ValueError as e:
+    logger.error(f"Configuration error: {e}")
+    raise
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
 
-# Configuration
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-OPENAI_API_BASE = 'https://api.openai.com/v1'
-HOST = '127.0.0.1'  # Back to localhost for testing
-PORT = 8000  # Try a different port
+# Configure CORS with environment-based settings
+cors_config = config.get_cors_config()
+if cors_config:
+    CORS(app, **cors_config)
+    if config.DEBUG:
+        logger.info(f"[CONFIG] CORS enabled with origins: {cors_config.get('origins', '*')}")
+else:
+    logger.warning("[CONFIG] CORS disabled")
 
-if not OPENAI_API_KEY:
-    logger.error("OPENAI_API_KEY environment variable is not set!")
-    raise ValueError("OPENAI_API_KEY is required but not found in environment variables")
+# Configuration aliases for backward compatibility
+OPENAI_API_KEY = config.OPENAI_API_KEY
+OPENAI_API_BASE = config.OPENAI_API_BASE
+HOST = config.HOST
+PORT = config.PORT
 
 # Initialize memory service (global variables)
 server_start_time = time.time()
@@ -99,13 +112,16 @@ def api_error_handler(service_required=True, error_prefix="API error"):
     return decorator
 
 
-def call_openai_api(endpoint, data, timeout=30):
+def call_openai_api(endpoint, data, timeout=None):
     """Make a request to the OpenAI API"""
+    if timeout is None:
+        timeout = config.OPENAI_API_TIMEOUT
+
     headers = {
         'Authorization': f'Bearer {OPENAI_API_KEY}',
         'Content-Type': 'application/json'
     }
-    
+
     logger.info(f"Calling OpenAI API: {endpoint} with model {data.get('model', 'unknown')}")
     
     try:
@@ -187,15 +203,16 @@ def initialize_memory_service_background():
         # Add timeout for initialization
         try:
             # Use the AsyncioLoopManager for cleaner async handling
-            result = AsyncioLoopManager.run_async(initialize_memory_service(), timeout=60.0)
-            
+            init_timeout = float(config.MEMORY_INIT_TIMEOUT)
+            result = AsyncioLoopManager.run_async(initialize_memory_service(), timeout=init_timeout)
+
             if memory_initialized:
                 logger.info("[MEMORY] Memory service: ENABLED")
             else:
                 logger.info("[MEMORY] Memory service: DISABLED")
-                
+
         except asyncio.TimeoutError:
-            logger.error("[MEMORY] Memory service initialization timed out after 60 seconds")
+            logger.error(f"[MEMORY] Memory service initialization timed out after {config.MEMORY_INIT_TIMEOUT} seconds")
             memory_initializing = False
             memory_initialized = False
             
@@ -347,10 +364,13 @@ def handle_memory_enhanced_completion(data, session_id, memory_options):
                     )
                 )
                 
-                # Debug logging for causal memory
-                causal_narrative = context.get('causal_narrative', 'None retrieved')
-                logger.info(f"CAUSAL DEBUG - Session {session_id[:8]}: Retrieved narrative length: {len(causal_narrative)} chars")
-                logger.info(f"CAUSAL DEBUG - Narrative preview: {causal_narrative[:100]}...")
+                # Debug logging for causal memory (only if explicitly enabled for security)
+                if config.LOG_SENSITIVE_DATA or config.DEBUG:
+                    causal_narrative = context.get('causal_narrative', 'None retrieved')
+                    logger.info(f"CAUSAL DEBUG - Session {session_id[:8]}: Retrieved narrative length: {len(causal_narrative)} chars")
+                    logger.info(f"CAUSAL DEBUG - Narrative preview: {causal_narrative[:100]}...")
+                else:
+                    logger.debug(f"CAUSAL - Session {session_id[:8]}: Retrieved causal context (content redacted)")
                 
                 # Add enhanced context to messages if available
                 context_parts = []
@@ -597,12 +617,40 @@ def memory_service_status():
     return jsonify(status)
 
 
+def validate_openai_connection():
+    """Validate OpenAI API connectivity on startup"""
+    logger.info("[HEALTHCHECK] Validating OpenAI API connection...")
+
+    try:
+        # Make a minimal API call to validate connectivity and API key
+        test_data = {
+            'model': 'gpt-3.5-turbo',
+            'messages': [{'role': 'user', 'content': 'test'}],
+            'max_tokens': 5
+        }
+
+        response, error = call_openai_api('chat/completions', test_data, timeout=10)
+
+        if error:
+            logger.error(f"[HEALTHCHECK] OpenAI API validation failed: {error}")
+            logger.error("[HEALTHCHECK] Server will start but OpenAI calls will fail")
+            logger.error("[HEALTHCHECK] Please check your OPENAI_API_KEY")
+            return False
+        else:
+            logger.info("[HEALTHCHECK] ✅ OpenAI API connection validated successfully")
+            return True
+
+    except Exception as e:
+        logger.error(f"[HEALTHCHECK] OpenAI API validation error: {e}")
+        logger.error("[HEALTHCHECK] Server will start but OpenAI calls may fail")
+        return False
+
+
 if __name__ == '__main__':
     # Start the server first, then initialize memory in background
     logger.info("[START] Covenant API Proxy is starting...")
     logger.info(f"[SERVER] Server running on http://{HOST}:{PORT}")
-    logger.info("[NOTE] Make sure OPENAI_API_KEY is set in your environment variables")
-    
+
     import signal
     import atexit
     
@@ -632,25 +680,29 @@ if __name__ == '__main__':
         signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)
-    
+
+    # Validate OpenAI API connection
+    validate_openai_connection()
+
     # Start memory service initialization in a background thread
     memory_thread = threading.Thread(target=initialize_memory_service_background)
     memory_thread.daemon = True
     memory_thread.start()
     
     try:
+        logger.info(f"[SERVER] Debug mode: {config.DEBUG}")
         app.run(
             host=HOST,
             port=PORT,
-            debug=True,
+            debug=config.DEBUG,
             use_reloader=False,
             threaded=True  # Enable threading for the Flask app
         )
     except Exception as e:
         logger.error(f"Failed to start Flask server: {e}")
         logger.error("This could be due to:")
-        logger.error("- Port 8000 already in use")
-        logger.error("- Windows Firewall blocking the connection")
+        logger.error(f"- Port {PORT} already in use")
+        logger.error("- Firewall blocking the connection")
         logger.error("- Insufficient permissions")
         sys.exit(1)
 
