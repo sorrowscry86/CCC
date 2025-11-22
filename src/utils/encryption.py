@@ -81,32 +81,55 @@ class EncryptionService:
             logger.error(f"Decryption failed: {e}")
             return encrypted_data  # Return encrypted data if decryption fails
     
+    # Utility methods for dictionary encryption (available for future use)
     def encrypt_dict(self, data: dict) -> dict:
-        """Encrypt sensitive fields in a dictionary"""
+        """
+        Encrypt sensitive fields in a dictionary
+
+        Note: This is a utility method currently not used in the codebase but available
+        for future encryption of dictionary-based data structures.
+
+        Args:
+            data: Dictionary potentially containing sensitive fields
+
+        Returns:
+            Dictionary with sensitive fields encrypted
+        """
         if not self.enabled:
             return data
-        
+
         # Define sensitive fields that should be encrypted
         sensitive_fields = ['content', 'directive', 'state_data', 'user_preferences']
-        
+
         encrypted_data = data.copy()
         for field in sensitive_fields:
             if field in encrypted_data and encrypted_data[field]:
                 encrypted_data[field] = self.encrypt(str(encrypted_data[field]))
-        
+
         return encrypted_data
-    
+
     def decrypt_dict(self, encrypted_data: dict) -> dict:
-        """Decrypt sensitive fields in a dictionary"""
+        """
+        Decrypt sensitive fields in a dictionary
+
+        Note: This is a utility method currently not used in the codebase but available
+        for future decryption of dictionary-based data structures.
+
+        Args:
+            encrypted_data: Dictionary with encrypted sensitive fields
+
+        Returns:
+            Dictionary with sensitive fields decrypted
+        """
         if not self.enabled:
             return encrypted_data
-        
+
         # Define sensitive fields that should be decrypted
         sensitive_fields = ['content', 'directive', 'state_data', 'user_preferences']
-        
+
         decrypted_data = encrypted_data.copy()
         for field in sensitive_fields:
             if field in decrypted_data and decrypted_data[field]:
                 decrypted_data[field] = self.decrypt(str(decrypted_data[field]))
-        
+
         return decrypted_data

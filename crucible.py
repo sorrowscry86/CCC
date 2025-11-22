@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import subprocess
 import logging
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +19,15 @@ logger = logging.getLogger(__name__)
 class CrucibleEnvironment:
     """
     The Crucible - A secure, ephemeral testing environment
-    
+
     Each verification task creates a temporary directory, writes code and test files,
     executes tests in a sandboxed subprocess, and then atomizes the workspace.
     """
-    
-    def __init__(self):
-        self.workspace = None
-    
-    def create_workspace(self):
+
+    def __init__(self) -> None:
+        self.workspace: Optional[str] = None
+
+    def create_workspace(self) -> str:
         """Create a temporary workspace for code testing"""
         try:
             self.workspace = tempfile.mkdtemp(prefix="crucible_", suffix="_workspace")
@@ -35,12 +36,12 @@ class CrucibleEnvironment:
         except Exception as e:
             logger.error(f"[CRUCIBLE] Failed to create workspace: {e}")
             raise
-    
-    def write_file(self, filename, content):
+
+    def write_file(self, filename: str, content: str) -> None:
         """Safely write content to a file within the workspace"""
         if not self.workspace:
             raise RuntimeError("Workspace not created. Call create_workspace() first.")
-        
+
         file_path = os.path.join(self.workspace, filename)
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -49,8 +50,8 @@ class CrucibleEnvironment:
         except Exception as e:
             logger.error(f"[CRUCIBLE] Failed to write file {filename}: {e}")
             raise
-    
-    def run_tests(self, timeout=30):
+
+    def run_tests(self, timeout: int = 30) -> Dict[str, Any]:
         """
         Execute pytest in the workspace and capture results
 
@@ -129,7 +130,7 @@ class CrucibleEnvironment:
                 'success': False
             }
     
-    def cleanup_workspace(self):
+    def cleanup_workspace(self) -> None:
         """Recursively delete the temporary workspace"""
         if self.workspace and os.path.exists(self.workspace):
             try:
@@ -139,18 +140,18 @@ class CrucibleEnvironment:
             except Exception as e:
                 logger.error(f"[CRUCIBLE] Failed to cleanup workspace: {e}")
                 raise
-    
-    def __enter__(self):
+
+    def __enter__(self) -> 'CrucibleEnvironment':
         """Context manager entry"""
         self.create_workspace()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit - always cleanup workspace"""
         self.cleanup_workspace()
 
 
-def verify_code(code_to_test, test_code, timeout=30):
+def verify_code(code_to_test: str, test_code: str, timeout: int = 30) -> Dict[str, Any]:
     """
     Convenience function to verify code with its test in an isolated environment
     
