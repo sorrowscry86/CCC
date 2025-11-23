@@ -1,7 +1,7 @@
 Flask==2.3.3
 Flask-CORS==6.0.0
 requests==2.32.4
-python-dotenv==1.0.0
+python-dotenv==1.2.1
 aiosqlite>=0.17.0
 cryptography>=3.4.8
 pyjwt>=2.4.0
