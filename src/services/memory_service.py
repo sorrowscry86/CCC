@@ -14,20 +14,22 @@ from ..models.memory_models import Session, Conversation, Turn, AgentState
 from ..utils.encryption import EncryptionService
 from ..utils.context_analyzer import ContextAnalyzer
 from ..utils.causal_memory_core import CausalMemoryCore
+from ..utils.performance_utils import BoundedSessionCache, truncate_context, limit_query_results, background_task
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryService:
     """Enhanced memory operations for CCC with causal reasoning capabilities"""
-    
+
     def __init__(self, dal: MemoryDAL):
         self.dal = dal
         self.context_analyzer = ContextAnalyzer()
         self.encryption_service = EncryptionService()
         self.causal_memory = CausalMemoryCore()
-        self._session_cache = {}
-        self._cache_timeout = 300  # 5 minutes
+        # P4.5: Use bounded LRU cache instead of unbounded dict
+        self._session_cache = BoundedSessionCache(maxsize=1000, ttl=300)
+        logger.info("MemoryService initialized with bounded session cache")
     
     async def initialize_session(self, user_preferences: Dict[str, Any] = None) -> Session:
         """Create new session with optional user context"""
@@ -39,18 +41,15 @@ class MemoryService:
             
             success = await self.dal.create_session(session)
             if success:
-                # Cache the session
-                self._session_cache[session.session_id] = {
-                    'session': session,
-                    'cached_at': datetime.utcnow()
-                }
-                
+                # Cache the session (P4.5: using bounded cache)
+                self._session_cache.set(session.session_id, session)
+
                 # Record session creation as causal event
                 self.causal_memory.add_event(
                     f"New CCC session created with preferences: {user_preferences or 'default'}",
                     session_id=session.session_id
                 )
-                
+
                 logger.info(f"New session created: {session.session_id}")
                 return session
             else:
@@ -61,33 +60,24 @@ class MemoryService:
             raise
     
     async def get_session(self, session_id: str) -> Optional[Session]:
-        """Get session by ID with caching"""
+        """Get session by ID with caching (P4.5: using bounded cache)"""
         try:
             # Check cache first
-            if session_id in self._session_cache:
-                cached_data = self._session_cache[session_id]
-                cache_age = (datetime.utcnow() - cached_data['cached_at']).seconds
-                
-                if cache_age < self._cache_timeout:
-                    return cached_data['session']
-                else:
-                    # Remove expired cache entry
-                    del self._session_cache[session_id]
-            
+            cached_session = self._session_cache.get(session_id)
+            if cached_session:
+                return cached_session
+
             # Get from database
             session = await self.dal.get_session(session_id)
             if session:
                 # Update cache
-                self._session_cache[session_id] = {
-                    'session': session,
-                    'cached_at': datetime.utcnow()
-                }
-                
+                self._session_cache.set(session_id, session)
+
                 # Update last active timestamp
                 await self.dal.update_session_activity(session_id)
-            
+
             return session
-            
+
         except Exception as e:
             logger.error(f"Failed to get session: {e}")
             return None
@@ -146,10 +136,8 @@ class MemoryService:
                     conversation_id=conversation_id
                 )
                 
-                # Update agent learning asynchronously
-                asyncio.create_task(
-                    self._update_agent_learning(session_id, agent, content, metadata or {})
-                )
+                # Update agent learning asynchronously (P4.10: proper background task)
+                self._update_agent_learning_background(session_id, agent, content, metadata or {})
             
             return success
             
@@ -235,8 +223,9 @@ class MemoryService:
                 )
                 
                 # Store both domain and narrative for structured context construction
-                context['domain'] = domain
-                context['causal_narrative'] = causal_narrative
+                # P4.9: Truncate large contexts to save tokens
+                context['domain'] = truncate_context(domain, max_tokens=200)
+                context['causal_narrative'] = truncate_context(causal_narrative, max_tokens=1500)
                 logger.info(f"Enhanced context with domain '{domain[:50]}...' and causal narrative for session {session_id}")
             except Exception as e:
                 logger.warning(f"Failed to get causal narrative: {e}")
@@ -264,6 +253,17 @@ class MemoryService:
                 'total_conversations': 0
             }
     
+    @background_task
+    async def _update_agent_learning_background(
+        self,
+        session_id: str,
+        agent: str,
+        content: str,
+        metadata: dict
+    ):
+        """Background task wrapper for agent learning updates"""
+        await self._update_agent_learning(session_id, agent, content, metadata)
+
     async def _update_agent_learning(
         self,
         session_id: str,

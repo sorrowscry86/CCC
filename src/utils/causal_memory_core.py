@@ -31,6 +31,36 @@ except ImportError:
     logger.warning("DuckDB or OpenAI not available. Causal Memory Core features disabled.")
 
 
+# P4.3: Singleton embedding model to avoid loading on every request
+_EMBEDDING_MODEL_SINGLETON = None
+_EMBEDDING_MODEL_LOCK = None
+
+def get_embedding_model():
+    """
+    Get or create singleton embedding model instance
+    P4.3: Prevents loading model on every CausalMemoryCore instantiation
+    """
+    global _EMBEDDING_MODEL_SINGLETON, _EMBEDDING_MODEL_LOCK
+    import threading
+
+    if _EMBEDDING_MODEL_LOCK is None:
+        _EMBEDDING_MODEL_LOCK = threading.Lock()
+
+    if _EMBEDDING_MODEL_SINGLETON is None:
+        with _EMBEDDING_MODEL_LOCK:
+            # Double-check after acquiring lock
+            if _EMBEDDING_MODEL_SINGLETON is None:
+                try:
+                    logger.info("Loading embedding model (singleton)...")
+                    _EMBEDDING_MODEL_SINGLETON = SentenceTransformer('all-MiniLM-L6-v2')
+                    logger.info("Embedding model loaded successfully")
+                except Exception as e:
+                    logger.error(f"Failed to load embedding model: {e}")
+                    return None
+
+    return _EMBEDDING_MODEL_SINGLETON
+
+
 @dataclass
 class CausalEvent:
     """Represents a causal event in the memory system"""
@@ -87,10 +117,10 @@ class CausalMemoryCore:
                 self.llm = openai
             else:
                 logger.warning("OPENAI_API_KEY not set. LLM features disabled.")
-            
-            # Initialize embedding model
-            self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-            
+
+            # P4.3: Use singleton embedding model instead of loading every time
+            self.embedder = get_embedding_model()
+
             logger.info("Causal Memory Core initialized successfully")
             
         except Exception as e:
@@ -374,24 +404,36 @@ class CausalMemoryCore:
             )
         return None
     
-    def _find_most_relevant_event(self, query_embedding: List[float], 
-                                 session_id: str = None) -> Optional[CausalEvent]:
-        """Find the most relevant event for a query"""
+    def _find_most_relevant_event(self, query_embedding: List[float],
+                                 session_id: str = None,
+                                 max_results: int = 1000) -> Optional[CausalEvent]:
+        """
+        Find the most relevant event for a query
+
+        P4.8: Added max_results limit to prevent full table scans
+        """
         if not self.conn:
             return None
-            
+
         # Build query with optional session filter
         base_query = """
-            SELECT event_id, timestamp, effect_text, embedding, cause_id, 
+            SELECT event_id, timestamp, effect_text, embedding, cause_id,
                    relationship_text, session_id, conversation_id
             FROM causal_events
         """
         params = []
-        
+
         if session_id:
             base_query += " WHERE session_id = ?"
             params.append(session_id)
-        
+        else:
+            # P4.8: Warn about full table scan and limit results
+            logger.warning(f"Full table scan on causal_events (no session filter), limiting to {max_results} rows")
+
+        # P4.8: Add ORDER BY and LIMIT to prevent scanning entire table
+        base_query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(max_results)
+
         rows = self.conn.execute(base_query, params).fetchall()
         
         if not rows:
